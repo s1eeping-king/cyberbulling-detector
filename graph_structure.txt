@@ -1,0 +1,46 @@
+1. 视频实体(Video)
+   - 基础属性：video_id, description, url, likes_count
+   - 特征属性：frame_features, bert_features
+   - 统计属性：comment_count, avg_sentiment_score
+
+2. 用户实体(User)
+   - 基础属性：user_id, profile_info
+   - 行为属性：post_count, comment_count
+   - 风险属性：risk_score, reported_count
+
+3. 评论实体(Comment)
+   - 基础属性：comment_id, content, timestamp
+   - 特征属性：bert_features
+   - 情感属性：sentiment_score, emotion_type
+
+4. 情感实体(Emotion)
+   - 类型：neutral, joy, sad, love, surprise, fear, anger
+   - 强度：emotion_intensity
+
+5. 攻击性实体(Aggression)
+   - 类型：noneAgg, aggression, noneBll, bullying
+   - 严重程度：severity_level
+
+1. 视频-评论-标签关系
+   - (Video)-[HAS_CONTENT]->(VideoContent)
+   - (Video)-[HAS_COMMENTS]->(CommentSection)
+   - (CommentSection)-[CONTAINS]->(Comment)
+   - (Video)-[HAS_OVERALL_LABEL]->(AggressionLabel)
+   - (Video)-[HAS_OVERALL_LABEL]->(BullyingLabel)
+
+2. 多模态特征关系
+   - (Video)-[HAS_FRAME_FEATURES]->(FrameFeatures)
+   - (CommentSection)-[HAS_BERT_FEATURES]->(BertFeatures)
+   - (Video)-[HAS_MULTIMODAL_FEATURES]->(MultimodalFeatures)
+
+3. 情感分析关系
+   - (Video)-[HAS_EMOTION]->(VideoEmotion)
+   - (CommentSection)-[HAS_EMOTION]->(CommentEmotion)
+   - (Video)-[HAS_AGGREGATE_EMOTION]->(AggregateEmotion)
+
+4. 用户交互关系
+   - (User)-[POSTED]->(Video)
+   - (User)-[COMMENTED]->(Comment)
+   - (User)-[INTERACTED_WITH]->(User)
+
+
