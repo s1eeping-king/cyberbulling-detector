@@ -142,6 +142,60 @@ class MultimodalDataset(Dataset):
         edge_index = torch.tensor(edge_list, dtype=torch.long).t()
         return edge_index
 
+    def _extract_local_subgraph(self, video_id: str, k_hops: int = 2) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        为给定的视频提取k跳邻居的局部子图
+        
+        Args:
+            video_id: 视频ID
+            k_hops: 要提取的跳数
+            
+        Returns:
+            node_features: 局部子图的节点特征
+            edge_index: 局部子图的边索引
+        """
+        # 获取视频节点的索引
+        video_node = f"video_{video_id}"
+        if video_node not in self.node_to_idx:
+            logger.warning(f"Video node {video_node} not found in graph")
+            return self.node_features, self.edge_index
+        
+        video_idx = self.node_to_idx[video_node]
+        
+        # 使用BFS提取k跳邻居
+        visited = {video_idx}
+        frontier = {video_idx}
+        for _ in range(k_hops):
+            next_frontier = set()
+            for node in frontier:
+                # 获取所有相邻节点
+                for edge in self.graph.edges(list(self.graph.nodes())[node]):
+                    neighbor = self.node_to_idx[edge[1]]
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        next_frontier.add(neighbor)
+            frontier = next_frontier
+        
+        # 提取子图的边
+        subgraph_edges = []
+        node_map = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted(visited))}
+        
+        for edge in self.graph.edges():
+            src_idx = self.node_to_idx[edge[0]]
+            dst_idx = self.node_to_idx[edge[1]]
+            if src_idx in visited and dst_idx in visited:
+                subgraph_edges.append([node_map[src_idx], node_map[dst_idx]])
+        
+        if not subgraph_edges:
+            logger.warning(f"No edges found in local subgraph for video {video_id}")
+            return self.node_features, self.edge_index
+        
+        # 创建子图的边索引和节点特征
+        edge_index = torch.tensor(subgraph_edges, dtype=torch.long).t()
+        node_features = self.node_features[sorted(visited)]
+        
+        return node_features, edge_index
+
     def __len__(self):
         return len(self.df)
 
@@ -157,34 +211,28 @@ class MultimodalDataset(Dataset):
         # 获取该视频的所有评论特征并平均
         if post_id in self.postid_to_feature_indices:
             feature_indices = self.postid_to_feature_indices[post_id]
-            # 去掉中间的维度1，然后对所有评论特征取平均
-            text_features = self.text_features[feature_indices].squeeze(1).mean(axis=0)  # [768]
+            text_features = self.text_features[feature_indices].squeeze(1).mean(axis=0)
         else:
             logger.warning(f"No comment features found for post {post_id}")
-            text_features = np.zeros(768)  # BERT特征维度
+            text_features = np.zeros(768)
             
         # 加载视频特征
         video_feature_path = self.feature_file_map[post_id]
-        video_features = np.load(video_feature_path)  # shape: [num_frames, 512]
+        video_features = np.load(video_feature_path)
+        video_features = torch.FloatTensor(video_features).mean(dim=0)
         
-        # 对视频特征在时间维度上进行平均池化
-        video_features = torch.FloatTensor(video_features)  # 转换为tensor
-        video_features = video_features.mean(dim=0)  # 对时间维度取平均，得到[512]维特征
+        # 提取局部子图
+        node_features, edge_index = self._extract_local_subgraph(post_id)
         
         # 创建PyTorch Geometric数据对象
         data = GraphData(
-            x=self.node_features,
-            edge_index=self.edge_index,
-            text_features=torch.FloatTensor(text_features).view(1, -1),  # [1, 768]
-            video_features=video_features.view(1, -1),  # [1, 512]
+            x=node_features,
+            edge_index=edge_index,
+            text_features=torch.FloatTensor(text_features).view(1, -1),
+            video_features=video_features.view(1, -1),
             bullying_label=torch.LongTensor([bullying_label]),
             aggression_label=torch.LongTensor([aggression_label])
         )
-        
-        # 打印特征维度用于调试
-        logger.debug(f"Text features shape: {text_features.shape}")
-        logger.debug(f"Video features shape: {video_features.shape}")
-        logger.debug(f"Graph data: {data}")
         
         return data
 

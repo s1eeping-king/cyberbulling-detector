@@ -300,10 +300,116 @@ class Trainer:
             f"Aggression F1: {test_metrics['aggression_f1']:.4f}"
         )
 
+def benchmark(model: CyberbullyingDetector, test_loader: DataLoader, save_dir: str = 'benchmark_results', device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
+    """
+    对模型进行全面的基准测试
+    
+    Args:
+        model: 训练好的模型
+        test_loader: 测试数据加载器
+        save_dir: 保存结果的目录
+        device: 计算设备
+    """
+    logger.info("开始基准测试...")
+    os.makedirs(save_dir, exist_ok=True)
+    model.eval()
+    
+    all_bullying_preds = []
+    all_bullying_labels = []
+    all_aggression_preds = []
+    all_aggression_labels = []
+    all_losses = []
+    
+    with torch.no_grad():
+        for batch in tqdm(test_loader, desc='Benchmarking'):
+            batch = batch.to(device)
+            
+            outputs = model(batch)
+            loss, metrics = model.compute_loss(outputs, batch)
+            
+            all_losses.append(loss.item())
+            all_bullying_preds.extend(outputs['bullying_logits'].argmax(dim=1).cpu().numpy())
+            all_bullying_labels.extend(batch.bullying_label.cpu().numpy())
+            all_aggression_preds.extend(outputs['aggression_logits'].argmax(dim=1).cpu().numpy())
+            all_aggression_labels.extend(batch.aggression_label.cpu().numpy())
+    
+    # 计算并保存混淆矩阵
+    plt.figure(figsize=(12, 5))
+    
+    plt.subplot(1, 2, 1)
+    cm_bullying = confusion_matrix(all_bullying_labels, all_bullying_preds)
+    sns.heatmap(cm_bullying, annot=True, fmt='d', cmap='Blues')
+    plt.title('Cyberbullying Detection\nConfusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    
+    plt.subplot(1, 2, 2)
+    cm_aggression = confusion_matrix(all_aggression_labels, all_aggression_preds)
+    sns.heatmap(cm_aggression, annot=True, fmt='d', cmap='Blues')
+    plt.title('Aggression Detection\nConfusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, 'confusion_matrices.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 生成分类报告
+    bullying_report = classification_report(all_bullying_labels, all_bullying_preds)
+    aggression_report = classification_report(all_aggression_labels, all_aggression_preds)
+    
+    # 计算每个类别的F1分数
+    bullying_f1_per_class = f1_score(all_bullying_labels, all_bullying_preds, average=None)
+    aggression_f1_per_class = f1_score(all_aggression_labels, all_aggression_preds, average=None)
+    
+    # 保存详细的评估结果
+    results = {
+        'average_loss': np.mean(all_losses),
+        'bullying_f1_macro': f1_score(all_bullying_labels, all_bullying_preds, average='macro'),
+        'aggression_f1_macro': f1_score(all_aggression_labels, all_aggression_preds, average='macro'),
+        'bullying_f1_per_class': bullying_f1_per_class.tolist(),
+        'aggression_f1_per_class': aggression_f1_per_class.tolist(),
+        'bullying_confusion_matrix': cm_bullying.tolist(),
+        'aggression_confusion_matrix': cm_aggression.tolist(),
+        'bullying_classification_report': bullying_report,
+        'aggression_classification_report': aggression_report
+    }
+    
+    # 将结果写入文件
+    with open(os.path.join(save_dir, 'benchmark_results.txt'), 'w', encoding='utf-8') as f:
+        f.write("=== Cyberbullying Detection Model Benchmark Results ===\n\n")
+        f.write(f"Average Loss: {results['average_loss']:.4f}\n\n")
+        
+        f.write("=== Cyberbullying Detection Results ===\n")
+        f.write(f"Macro F1 Score: {results['bullying_f1_macro']:.4f}\n")
+        f.write("F1 Score per class: \n")
+        for i, f1 in enumerate(results['bullying_f1_per_class']):
+            f.write(f"Class {i}: {f1:.4f}\n")
+        f.write("\nClassification Report:\n")
+        f.write(results['bullying_classification_report'])
+        
+        f.write("\n=== Aggression Detection Results ===\n")
+        f.write(f"Macro F1 Score: {results['aggression_f1_macro']:.4f}\n")
+        f.write("F1 Score per class: \n")
+        for i, f1 in enumerate(results['aggression_f1_per_class']):
+            f.write(f"Class {i}: {f1:.4f}\n")
+        f.write("\nClassification Report:\n")
+        f.write(results['aggression_classification_report'])
+    
+    # 保存结果为JSON格式（方便后续分析）
+    with open(os.path.join(save_dir, 'benchmark_results.json'), 'w', encoding='utf-8') as f:
+        json.dump(results, f, indent=4, ensure_ascii=False)
+    
+    logger.info(f"基准测试结果已保存到 {save_dir}")
+    return results
+
 def main():
     # 设置随机种子
     torch.manual_seed(42)
     np.random.seed(42)
+    
+    # 设置设备
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # 创建数据加载器
     train_loader, val_loader, test_loader = create_data_loaders(
@@ -312,20 +418,20 @@ def main():
         frame_features_dir="processed/frame_features",
         comment_ids_path="processed/comment_ids.txt",
         graph_path="knowledge_graph.pkl",
-        batch_size=8  # 减小batch size
+        batch_size=8
     )
     
     # 创建模型
     model = CyberbullyingDetector(
         text_dim=768,
         video_dim=512,
-        hidden_dim=256,  # 减小隐藏层维度
-        num_heads=2,     # 减少注意力头数量
+        hidden_dim=256,
+        num_heads=2,
         dropout=0.3,
-        node_feature_dim=13,  # 更新为实际的节点类型数量
-        gnn_hidden_dim=32,   # 减小GNN隐藏层维度
-        gnn_output_dim=64    # 减小GNN输出维度
-    )
+        node_feature_dim=13,
+        gnn_hidden_dim=32,
+        gnn_output_dim=64
+    ).to(device)
     
     # 创建训练器
     trainer = Trainer(
@@ -336,11 +442,23 @@ def main():
         learning_rate=1e-4,
         weight_decay=1e-4,
         patience=5,
-        gradient_accumulation_steps=4  # 添加梯度累积
+        gradient_accumulation_steps=4
     )
     
     # 训练模型
     trainer.train(num_epochs=20)
+    
+    # 进行基准测试
+    logger.info("开始进行基准测试...")
+    benchmark_dir = "benchmark_results"
+    benchmark_results = benchmark(model, test_loader, save_dir=benchmark_dir, device=device)
+    
+    # 保存模型特征
+    logger.info("保存模型特征...")
+    features_dir = os.path.join(benchmark_dir, "model_features")
+    save_features(model, train_loader, features_dir, split='train', device=device)
+    save_features(model, val_loader, features_dir, split='val', device=device)
+    save_features(model, test_loader, features_dir, split='test', device=device)
 
 if __name__ == "__main__":
     main() 
