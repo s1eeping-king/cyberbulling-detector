@@ -2,6 +2,8 @@
 /try/
 /label_data/
 /visualizations/
+/__pycache__/
+/benchmark_results/
 processed_vine.csv
 sampled_post-comments_vine.json
 SampledASONAMPosts.json
@@ -9,4 +11,7 @@ vine_users_data.json
 knowledge_graph.pkl
 readme_py.md
 readme.txt
-/__pycache__/
+tempCodeRunnerFile.py
+new.txt
+urls_to_postids.txt
+visualize_kg.py
