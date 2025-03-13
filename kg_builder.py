@@ -119,7 +119,7 @@ class CyberbullyingKnowledgeGraph:
                 id=video_id,
                 url=video.get('url', ''),
                 description=video.get('description', ''),
-                likes_count=video.get('likes_count', 0),
+                likes_count=video.get('likeCount', 0),
                 timestamp=video.get('created', ''),
                 comment_count=len(self.get_comments_for_video(video_id))
             )
@@ -173,6 +173,10 @@ class CyberbullyingKnowledgeGraph:
         video_ids = [node.split('_')[1] for node in self.G.nodes() if node.startswith('video_')]
         
         for video_id in video_ids:
+            # 获取视频节点的评论数量
+            video_node = f"video_{video_id}"
+            comment_count = self.G.nodes[video_node].get('comment_count', 0)
+            
             # 获取视频的所有评论
             comments = self.get_comments_for_video(video_id)
             
@@ -187,7 +191,7 @@ class CyberbullyingKnowledgeGraph:
                 f"media_session_{video_id}",
                 node_type='MediaSession',
                 video_id=video_id,
-                comment_count=len(comments),
+                comment_count=comment_count,  # 使用视频节点的评论数量
                 aggregated_comments=aggregated_comments
             )
             
@@ -249,15 +253,14 @@ class CyberbullyingKnowledgeGraph:
                     target_id=video_id,
                     label_type='bullying',
                     value=bullying_value,
-                    confidence=row.get('_golden', 1.0)  # 置信度，默认为1.0
+                    confidence=row.get('question2:confidence', 1.0)  # 置信度，默认为1.0
                 )
                 
                 # 添加媒体会话-标签关系
                 self.G.add_edge(
                     media_session_node,
                     bullying_label_id,
-                    relation='HAS_LABEL',
-                    source='human_annotation'
+                    relation='HAS_LABEL'
                 )
                 
                 # 攻击性标签
@@ -270,15 +273,14 @@ class CyberbullyingKnowledgeGraph:
                     target_id=video_id,
                     label_type='aggression',
                     value=aggression_value,
-                    confidence=row.get('_golden', 1.0)  # 置信度，默认为1.0
+                    confidence=row.get('question1:confidence', 1.0)  # 置信度，默认为1.0
                 )
                 
                 # 添加媒体会话-标签关系
                 self.G.add_edge(
                     media_session_node,
                     aggression_label_id,
-                    relation='HAS_LABEL',
-                    source='human_annotation'
+                    relation='HAS_LABEL'
                 )
                 
                 label_count += 2
@@ -305,7 +307,7 @@ class CyberbullyingKnowledgeGraph:
             
             if video_id and f"video_{video_id}" in self.G:
                 # 情感标签
-                emotion_value = row.get('emotion', 'neutral')
+                emotion_value = row.get('question2', 'neutral')
                 emotion_label_id = f"label_emotion_{video_id}"
                 
                 self.G.add_node(
@@ -314,19 +316,18 @@ class CyberbullyingKnowledgeGraph:
                     target_id=video_id,
                     label_type='emotion',
                     value=emotion_value,
-                    confidence=row.get('_trusted', 1.0)  # 置信度，默认为1.0
+                    confidence=row.get('question2:confidence', 1.0)  # 置信度，默认为1.0
                 )
                 
                 # 添加视频-标签关系
                 self.G.add_edge(
                     f"video_{video_id}",
                     emotion_label_id,
-                    relation='HAS_LABEL',
-                    source='human_annotation'
+                    relation='HAS_LABEL'
                 )
                 
                 # 主题标签
-                topic_value = row.get('topic', 'other')
+                topic_value = row.get('question3', 'other')
                 topic_label_id = f"label_topic_{video_id}"
                 
                 self.G.add_node(
@@ -335,15 +336,14 @@ class CyberbullyingKnowledgeGraph:
                     target_id=video_id,
                     label_type='topic',
                     value=topic_value,
-                    confidence=row.get('_trusted', 1.0)  # 置信度，默认为1.0
+                    confidence=row.get('question3:confidence', 1.0)  # 置信度，默认为1.0
                 )
                 
                 # 添加视频-标签关系
                 self.G.add_edge(
                     f"video_{video_id}",
                     topic_label_id,
-                    relation='HAS_LABEL',
-                    source='human_annotation'
+                    relation='HAS_LABEL'
                 )
                 
                 label_count += 2
