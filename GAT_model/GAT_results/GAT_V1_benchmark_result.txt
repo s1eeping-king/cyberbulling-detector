@@ -1,0 +1,24 @@
+=== Cyberbullying Detection Model Benchmark Results ===
+
+Average Loss: 0.5323
+
+=== Cyberbullying Detection Results ===
+Macro F1 Score: 0.6506
+F1 Score per class: 
+Class 0: 0.7644
+Class 1: 0.5854
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0       0.80      0.85      0.82       114
+           1       0.61      0.70      0.65        53
+
+    accuracy                           0.76       167
+   macro avg       0.70      0.78      0.74       167
+weighted avg       0.76      0.76      0.76       167
+
+=== Additional Metrics ===
+Precision: 0.6723
+Recall: 0.7000
+F1 Score: 0.6859
