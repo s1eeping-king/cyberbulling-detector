@@ -10,7 +10,7 @@ class FeatureExtractor:
         self.data_dir = data_dir
         self.nodes = {
             "comments": [],
-            "labels": [],
+            "labels": [],  # 只保留霸凌和攻击性标签
             "media_sessions": [],
             "users": []
         }
@@ -18,7 +18,7 @@ class FeatureExtractor:
             "publishes": [],      # user publish media
             "creates": [],        # user create comment
             "mentions": [],       # comment mention user
-            "annotates": [],      # media has Label
+            "annotates": [],      # media has Label (只用于霸凌和攻击性标签)
             "belongs_to": []      # comment belongs to media session
         }
 
@@ -123,9 +123,54 @@ class FeatureExtractor:
             self.nodes["users"].append(user_node)
 
     def extract_media_sessions(self):
-        """Extract media session nodes"""
+        """Extract media session nodes with emotion and topic labels as properties"""
+        # 创建一个字典来存储每个视频的标签信息
+        video_labels = {}
+        
+        # 处理情感标注数据
+        for _, row in self.emotion_data.iterrows():
+            video_url = row['videolink']
+            post_id = self.url_to_postid.get(video_url)
+            if not post_id:
+                print(f"Warning: No postID found for URL: {video_url}")
+                continue
+
+            video_labels[post_id] = {
+                "emotion": row.get("question2"),
+                "theme": row.get("question3"),
+                "emotion_confidence": row.get("question2:confidence"),
+                "theme_confidence": row.get("question3:confidence")
+            }
+
+        # 处理网络欺凌标注数据
+        for _, row in self.cyberbullying_data.iterrows():
+            video_url = row['videolink']
+            post_id = self.url_to_postid.get(video_url)
+            if not post_id:
+                print(f"Warning: No postID found for URL: {video_url}")
+                continue
+
+            if post_id in video_labels:
+                video_labels[post_id].update({
+                    "aggression": row.get("question1"),
+                    "bullying": row.get("question2"),
+                    "aggression_confidence": row.get("question1:confidence"),
+                    "bullying_confidence": row.get("question2:confidence")
+                })
+            else:
+                video_labels[post_id] = {
+                    "aggression": row.get("question1"),
+                    "bullying": row.get("question2"),
+                    "aggression_confidence": row.get("question1:confidence"),
+                    "bullying_confidence": row.get("question2:confidence")
+                }
+
+        # 创建媒体会话节点
         for post_id, post_info in self.video_data.items():
             video_url = post_info.get('permalinkUrl', '')
+            
+            # 获取该视频的标签信息
+            labels = video_labels.get(post_id, {})
             
             media_session = {
                 "id": post_id,
@@ -139,7 +184,12 @@ class FeatureExtractor:
                     "repostCount": post_info.get("repostCount", 0),
                     "created": post_info.get("created", ""),
                     "userId": post_info.get("userId", ""),
-                    "username": post_info.get("username", "")
+                    "username": post_info.get("username", ""),
+                    # 添加情感和主题标签作为属性
+                    "emotion": labels.get("emotion"),
+                    "theme": labels.get("theme"),
+                    "emotion_confidence": labels.get("emotion_confidence"),
+                    "theme_confidence": labels.get("theme_confidence")
                 }
             }
             self.nodes["media_sessions"].append(media_session)
@@ -171,78 +221,28 @@ class FeatureExtractor:
             self.nodes["comments"].append(comment_node)
 
     def extract_labels(self):
-        """Extract label nodes combining both emotion and cyberbullying data"""
-        # 创建一个字典来临时存储标注，以videolink为键
-        labels = {}
-        
-        # 处理情感标注数据
-        for _, row in self.emotion_data.iterrows():
+        """只提取霸凌和攻击性标签节点"""
+        for _, row in self.cyberbullying_data.iterrows():
             video_url = row['videolink']
-            # 获取对应的postID
             post_id = self.url_to_postid.get(video_url)
             if not post_id:
                 print(f"Warning: No postID found for URL: {video_url}")
                 continue
 
-            labels[video_url] = {
-                "id": f"label_{post_id}",  # 使用postID创建标签ID
+            # 只创建霸凌和攻击性标签节点
+            label_node = {
+                "id": f"label_{post_id}",
                 "type": "label",
                 "properties": {
                     "videolink": video_url,
-                    "postId": post_id,  # 添加postId到属性中
-                    # 情感和主题标注
-                    "emotion": row.get("question2"),
-                    "theme": row.get("question3"),
-                    "emotion_confidence": row.get("question2:confidence"),
-                    "theme_confidence": row.get("question3:confidence"),
-                    # 初始化霸凌和攻击性标注为None
-                    "aggression": None,
-                    "bullying": None,
-                    "aggression_confidence": None,
-                    "bullying_confidence": None
-                }
-            }
-        
-        # 处理网络欺凌标注数据
-        for _, row in self.cyberbullying_data.iterrows():
-            video_url = row['videolink']
-            # 获取对应的postID
-            post_id = self.url_to_postid.get(video_url)
-            if not post_id:
-                print(f"Warning: No postID found for URL: {video_url}")
-                continue
-
-            if video_url in labels:
-                # 如果已经有情感标注，添加霸凌标注
-                labels[video_url]["properties"].update({
+                    "postId": post_id,
                     "aggression": row.get("question1"),
                     "bullying": row.get("question2"),
                     "aggression_confidence": row.get("question1:confidence"),
                     "bullying_confidence": row.get("question2:confidence")
-                })
-            else:
-                # 如果没有情感标注，创建新的标注节点
-                labels[video_url] = {
-                    "id": f"label_{post_id}",  # 使用postID创建标签ID
-                    "type": "label",
-                    "properties": {
-                        "videolink": video_url,
-                        "postId": post_id,  # 添加postId到属性中
-                        # 初始化情感和主题标注为None
-                        "emotion": None,
-                        "theme": None,
-                        "emotion_confidence": None,
-                        "theme_confidence": None,
-                        # 霸凌和攻击性标注
-                        "aggression": row.get("question1"),
-                        "bullying": row.get("question2"),
-                        "aggression_confidence": row.get("question1:confidence"),
-                        "bullying_confidence": row.get("question2:confidence")
-                    }
                 }
-        
-        # 将所有标注添加到节点列表中
-        self.nodes["labels"].extend(labels.values())
+            }
+            self.nodes["labels"].append(label_node)
 
     def extract_relationships(self):
         """Extract all relationships"""
@@ -297,7 +297,7 @@ class FeatureExtractor:
             }
             self.relationships["mentions"].append(mention_rel)
         
-        # 4. Media has Label relationship
+        # 4. Media has Label relationship (只用于霸凌和攻击性标签)
         for label in self.nodes["labels"]:
             post_id = label["properties"].get("postId")
             if post_id:

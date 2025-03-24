@@ -121,7 +121,6 @@ class KnowledgeGraphBuilder:
             MATCH (c:Comment {id: rel.target})
             MERGE (u)-[r:CREATES]->(c)
             SET r += rel.properties
-            RETURN count(*) as created_count
             """,
             "mentions": """
             // Comment -> User
@@ -149,61 +148,13 @@ class KnowledgeGraphBuilder:
             """
         }
 
-        verification_queries = {
-            "creates": """
-            MATCH p=(u:User)-[r:CREATES]->(c:Comment)
-            RETURN count(p) as relationship_count
-            """,
-            "publishes": """
-            MATCH p=(u:User)-[r:PUBLISHES]->(m:MediaSession)
-            RETURN count(p) as relationship_count
-            """,
-            "mentions": """
-            MATCH p=(c:Comment)-[r:MENTIONS]->(u:User)
-            RETURN count(p) as relationship_count
-            """,
-            "annotates": """
-            MATCH p=(m:MediaSession)-[r:HAS_LABEL]->(l:Label)
-            RETURN count(p) as relationship_count
-            """,
-            "belongs_to": """
-            MATCH p=(c:Comment)-[r:BELONGS_TO]->(m:MediaSession)
-            RETURN count(p) as relationship_count
-            """
-        }
-
         with self.driver.session() as session:
             for rel_type, rels in relationships.items():
                 if rel_type in relationship_queries:
                     try:
                         # 执行关系创建
-                        result = session.run(relationship_queries[rel_type], rels=rels)
-                        
-                        # 验证创建的关系
-                        if rel_type in verification_queries:
-                            verify_result = session.run(verification_queries[rel_type])
-                            actual_count = verify_result.single()["relationship_count"]
-                            self.logger.info(f"Created and verified {actual_count} {rel_type} relationships")
-                            
-                            if actual_count < len(rels):
-                                # 检查缺失的关系
-                                self.logger.warning(f"Missing {len(rels) - actual_count} {rel_type} relationships")
-                                # 添加诊断查询
-                                missing_nodes_query = """
-                                UNWIND $rels AS rel
-                                OPTIONAL MATCH (source {id: rel.source})
-                                OPTIONAL MATCH (target {id: rel.target})
-                                WITH rel, source, target
-                                WHERE source IS NULL OR target IS NULL
-                                RETURN DISTINCT rel.source as source_id, 
-                                       rel.target as target_id,
-                                       source IS NOT NULL as source_exists,
-                                       target IS NOT NULL as target_exists
-                                LIMIT 5
-                                """
-                                missing_results = session.run(missing_nodes_query, rels=rels)
-                                for record in missing_results:
-                                    self.logger.warning(f"Missing nodes for {rel_type} relationship: {dict(record)}")
+                        session.run(relationship_queries[rel_type], rels=rels)
+                        self.logger.info(f"Created {len(rels)} {rel_type} relationships")
                     except Exception as e:
                         self.logger.error(f"Error creating {rel_type} relationships: {e}")
                         if rels:
@@ -239,28 +190,6 @@ class KnowledgeGraphBuilder:
             # Create relationships
             self.create_relationships(data['relationships'])
 
-            # 验证最终结果
-            with self.driver.session() as session:
-                # 验证节点数量
-                for node_type in ['User', 'Comment', 'MediaSession', 'Label']:
-                    result = session.run(f"MATCH (n:{node_type}) RETURN count(n) as count")
-                    count = result.single()["count"]
-                    self.logger.info(f"Final count of {node_type} nodes: {count}")
-
-                # 验证关系数量和方向
-                relationship_checks = [
-                    ("User-[CREATES]->Comment", "MATCH p=(u:User)-[r:CREATES]->(c:Comment) RETURN count(p) as count"),
-                    ("User-[PUBLISHES]->MediaSession", "MATCH p=(u:User)-[r:PUBLISHES]->(m:MediaSession) RETURN count(p) as count"),
-                    ("Comment-[MENTIONS]->User", "MATCH p=(c:Comment)-[r:MENTIONS]->(u:User) RETURN count(p) as count"),
-                    ("MediaSession-[HAS_LABEL]->Label", "MATCH p=(m:MediaSession)-[r:HAS_LABEL]->(l:Label) RETURN count(p) as count"),
-                    ("Comment-[BELONGS_TO]->MediaSession", "MATCH p=(c:Comment)-[r:BELONGS_TO]->(m:MediaSession) RETURN count(p) as count")
-                ]
-
-                for description, query in relationship_checks:
-                    result = session.run(query)
-                    count = result.single()["count"]
-                    self.logger.info(f"Final count of {description}: {count}")
-
             self.logger.info("Knowledge graph built successfully")
 
         except Exception as e:
@@ -286,7 +215,7 @@ def main():
 
     try:
         # Build the knowledge graph using the combined features file
-        builder.build_knowledge_graph("data/processed/full_features.json")
+        builder.build_knowledge_graph("data/processed/core_features.json")
     finally:
         builder.close()
 
