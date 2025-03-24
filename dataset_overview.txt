@@ -25,7 +25,6 @@ vine_bert_features_origin.npy: 之前用bert提取的特征，可作为对比文
 processed_vine.csv: vine_labeled_cyberbullying_data.csv的缩小版数据，将原数据的comments数量从660缩小到了1，其余不变 (因此，仅供理解！并不能被用作数据集！)
 
 数据集间关联关系(简化为数字表述，每个数字的具体名称在上方有写)：
-(注：3是txt文件，因此列名其实不存在，其文件内容为postid, videolink格式)
 1:postId - 2:postId - 3:postId
 4:videolink - 3:videolink - 5:videolink - 6:videolink - 7:videolink
 4:_unit_id - 3:_unit_id - 5:_unit_id - 6:_unit_id

@@ -2,3 +2,6 @@
 /data/
 knowledge_graph/knowledge_graph.pkl
 tempCodeRunnerFile.py
+/knowledge_graph/kg_v1/
+/knowledge_graph/__pycache__/
+/GAT_model/GAT_basic/
