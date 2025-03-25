@@ -215,7 +215,7 @@ def main():
 
     try:
         # Build the knowledge graph using the combined features file
-        builder.build_knowledge_graph("data/processed/core_features.json")
+        builder.build_knowledge_graph("data/processed/full_features.json")
     finally:
         builder.close()
 

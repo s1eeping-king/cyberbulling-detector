@@ -2,7 +2,6 @@ import torch
 from torch_geometric.data import HeteroData
 from neo4j import GraphDatabase
 from typing import Dict, List, Tuple
-import logging
 
 class DataLoader:
     """从Neo4j加载数据并处理为PyG格式的数据加载器"""
@@ -11,19 +10,7 @@ class DataLoader:
         """初始化数据加载器"""
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
         self.device = device
-        self.logger = self.setup_logger()
-        
-    @staticmethod
-    def setup_logger():
-        """设置日志"""
-        logger = logging.getLogger('DataLoader')
-        logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        return logger
-        
+            
     def get_all_media_sessions(self) -> List[str]:
         """获取所有媒体会话ID"""
         query = """
@@ -36,7 +23,6 @@ class DataLoader:
             
     def load_subgraph(self, media_session_id: str) -> HeteroData:
         """加载单个媒体会话的子图"""
-        # 构建查询
         query = """
         MATCH (m:MediaSession {id: $media_id})
         OPTIONAL MATCH (m)<-[r1:BELONGS_TO]-(c:Comment)
@@ -59,17 +45,8 @@ class DataLoader:
         with self.driver.session() as session:
             result = session.run(query, media_id=media_session_id).single()
             if not result:
-                self.logger.warning(f"No data found for media session {media_session_id}")
                 return None
                 
-            # 打印原始查询结果中的标签信息
-            # self.logger.info(f"Media session {media_session_id}:")
-            # self.logger.info(f"Labels found: {len(result['labels'])}")
-            # if result['labels']:
-            #     self.logger.info(f"First label properties: {dict(result['labels'][0])}")
-            # self.logger.info(f"Has_label relationships: {result['has_label_rels']}")
-                
-            # 创建异构图数据对象
             data = HeteroData()
             
             # 处理节点特征
@@ -93,23 +70,46 @@ class DataLoader:
     def _process_media_features(self, media) -> torch.Tensor:
         """处理媒体会话节点特征"""
         if not media:
-            return torch.zeros((0, 8), dtype=torch.float, device=self.device)
+            return torch.zeros((0, 10), dtype=torch.float, device=self.device)
             
         properties = dict(media)
+        # 将emotion和theme转换为数值特征
+        emotion_map = {
+            'neutral': 0.0,
+            'joy': 1.0,
+            'sad': -1.0,
+            'love': 2.0,
+            'surprise': 3.0,
+            'fear': -2.0,
+            'anger': -3.0
+        }
+        theme_map = {
+            'people': 1.0,
+            'person': 2.0,
+            'indoor': 3.0,
+            'outdoor': 4.0,
+            'cartoon': 5.0,
+            'text': 6.0,
+            'activity': 7.0,
+            'animal': 8.0,
+            'other': 0.0
+        }
         
-        # 提取数值特征
+        # 简单的文本编码
+        description = str(properties.get('description', ''))
+        desc_encoding = self._simple_text_encoding(description)
+        
         features = [
             float(properties.get('likeCount', 0)),
             float(properties.get('commentCount', 0)),
             float(properties.get('loopCount', 0)),
             float(properties.get('repostCount', 0)),
-            # 文本长度特征
-            len(str(properties.get('description', ''))),
-            # 情感和主题的置信度
+            desc_encoding,  # 使用编码后的描述
             float(properties.get('emotion_confidence', 0)),
             float(properties.get('theme_confidence', 0)),
-            # 创建时间（转换为时间戳）
-            float(properties.get('created', '0').replace('T', ' ').replace('Z', '').count(':'))  # 简单处理，仅用于示例
+            float(properties.get('created', '0').replace('T', ' ').replace('Z', '').count(':')),
+            emotion_map.get(properties.get('emotion', 'neutral'), 0.0),
+            theme_map.get(properties.get('theme', 'other'), 0.0)
         ]
         
         return torch.tensor([features], dtype=torch.float, device=self.device)
@@ -122,9 +122,13 @@ class DataLoader:
         features_list = []
         for comment in comments:
             properties = dict(comment)
+            # 简单的文本编码
+            text = str(properties.get('text', ''))
+            text_encoding = self._simple_text_encoding(text)
+            
             features = [
-                len(str(properties.get('text', ''))),
-                float(hash(str(properties.get('postId', ''))) % 1000)  # 添加postId的哈希值作为特征
+                text_encoding,  # 使用编码后的文本
+                float(hash(str(properties.get('postId', ''))) % 1000)
             ]
             features_list.append(features)
             
@@ -135,19 +139,30 @@ class DataLoader:
         if not users:
             return torch.zeros((0, 6), dtype=torch.float, device=self.device)
             
-        features_list = []
+        # 使用字典进行去重，以用户ID为键
+        unique_users = {}
         for user in users:
             properties = dict(user)
-            features = [
-                float(properties.get('followerCount', 0)),
-                float(properties.get('followingCount', 0)),
-                float(properties.get('likeCount', 0)),
-                float(properties.get('postCount', 0)),
-                len(str(properties.get('username', ''))),
-                len(str(properties.get('description', '')))
-            ]
-            features_list.append(features)
+            user_id = str(properties.get('id', ''))
+            if user_id not in unique_users:
+                # 简单的文本编码
+                username = str(properties.get('username', ''))
+                description = str(properties.get('description', ''))
+                username_encoding = self._simple_text_encoding(username)
+                desc_encoding = self._simple_text_encoding(description)
+                
+                features = [
+                    float(properties.get('followerCount', 0)),
+                    float(properties.get('followingCount', 0)),
+                    float(properties.get('likeCount', 0)),
+                    float(properties.get('postCount', 0)),
+                    username_encoding,  # 使用编码后的用户名
+                    desc_encoding      # 使用编码后的描述
+                ]
+                unique_users[user_id] = features
             
+        # 将去重后的特征转换为tensor
+        features_list = list(unique_users.values())
         return torch.tensor(features_list, dtype=torch.float, device=self.device)
         
     def _process_label_features(self, labels) -> torch.Tensor:
@@ -173,11 +188,9 @@ class DataLoader:
         if not edge_data:
             return torch.zeros((2, 0), dtype=torch.long, device=self.device)
             
-        # 创建节点ID到索引的映射
         unique_nodes = set()
         valid_edges = []
         
-        # 收集所有有效的边
         for e in edge_data:
             if e[0] is not None and e[1] is not None:
                 unique_nodes.add(str(e[0]))
@@ -187,10 +200,8 @@ class DataLoader:
         if not valid_edges:
             return torch.zeros((2, 0), dtype=torch.long, device=self.device)
             
-        # 创建连续的索引映射
         id_to_idx = {node_id: idx for idx, node_id in enumerate(sorted(unique_nodes))}
         
-        # 转换为索引
         edge_indices = []
         for src, dst in valid_edges:
             src_idx = id_to_idx[src]
@@ -202,22 +213,20 @@ class DataLoader:
     def _get_bullying_labels(self, labels) -> torch.Tensor:
         """获取霸凌和攻击性标签"""
         if not labels:
-            # self.logger.warning("No labels found for this media session")
             return torch.zeros((1, 2), dtype=torch.float, device=self.device)
             
-        # 从第一个标签获取信息（因为每个媒体会话只有一个标签）
         properties = dict(labels[0])
-        
-        # 检查标签值
         bullying = float(properties.get('bullying', 'noneBll') == 'bullying')
         aggression = float(properties.get('aggression', 'noneAgg') == 'aggression')
-        
-        # 打印标签信息用于调试
-        # if bullying == 1.0 or aggression == 1.0:
-        #     self.logger.info(f"Found positive label - Bullying: {bullying} ({properties.get('bullying')}), "
-        #                    f"Aggression: {aggression} ({properties.get('aggression')})")
             
         return torch.tensor([[bullying, aggression]], dtype=torch.float, device=self.device)
+        
+    def _simple_text_encoding(self, text: str) -> float:
+        """简单的文本编码函数"""
+        if not text:
+            return 0.0
+        # 将文本转换为数值：将每个字符的ASCII码相加并取平均
+        return sum(ord(c) for c in text) / len(text)
         
     def close(self):
         """关闭数据库连接"""
