@@ -1,0 +1,40 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Python: 当前文件",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${file}",
+        "console": "integratedTerminal",
+        "justMyCode": false,  // 允许调试 PyTorch 源码
+        "env": {              // 环境变量设置
+          "PYTHONPATH": "${workspaceFolder}"
+        },
+        "args": [],           // 命令行参数
+        "cwd": "${workspaceFolder}" // 工作目录
+      },
+      
+      // 添加一个新的配置用于启动特定脚本
+      {
+        "name": "Python: GAT主程序",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "D:\\Work\\PostGraduate\\Dissertations\\multimodal_v5\\GAT_model\\GAT_Intermediate\\main.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}",
+          // 如果使用GPU可以添加：
+          "CUDA_VISIBLE_DEVICES": "0"  // 指定使用的GPU编号
+        },
+        "args": [
+          // 添加您常用的命令行参数，例如：
+          // "--dataset", "cora",
+          // "--hidden", "8",
+          // "--lr", "0.01"
+        ],
+        "cwd": "${workspaceFolder}"
+      },
+    ]
+}

@@ -11,7 +11,8 @@ class CoreFeatureCleaner:
         self.valid_user_ids = set()  # 存储有效的用户ID
         self.valid_comment_ids = set()  # 存储有效的评论ID
         self.existing_user_ids = set()  # 存储用户节点中已存在的用户ID
-
+        self.valid_media_ids = set()  # 存储有效的媒体会话ID
+        
     def load_data(self):
         """加载原始数据"""
         print(f"Loading data from {self.input_file}")
@@ -104,10 +105,59 @@ class CoreFeatureCleaner:
         for rel_type, rels in self.data['relationships'].items():
             print(f"  {rel_type}: {len(rels)}")
 
+    def filter_media_sessions(self):
+        """过滤没有annotates关系的媒体会话"""
+        # 获取所有有annotates关系的媒体会话ID
+        media_with_annotates = {rel['source'] for rel in self.data['relationships']['annotates']}
+        print(f"Found {len(media_with_annotates)} media sessions with annotates relationships")
+        
+        # 过滤媒体会话节点
+        original_count = len(self.data['nodes']['media_sessions'])
+        self.valid_media_ids = media_with_annotates
+        filtered_media = [media for media in self.data['nodes']['media_sessions'] 
+                         if media['id'] in self.valid_media_ids]
+        
+        # 更新媒体会话节点
+        self.data['nodes']['media_sessions'] = filtered_media
+        print(f"Filtered media sessions: {len(filtered_media)} (from {original_count})")
+        
+        # 过滤相关的关系
+        # 1. 过滤publishes关系
+        filtered_publishes = [rel for rel in self.data['relationships']['publishes']
+                            if rel['target'] in self.valid_media_ids]
+        print(f"Filtered publishes relationships: {len(filtered_publishes)} (from {len(self.data['relationships']['publishes'])})")
+        
+        # 2. 过滤belongs_to关系
+        filtered_belongs = [rel for rel in self.data['relationships']['belongs_to']
+                          if rel['target'] in self.valid_media_ids]
+        print(f"Filtered belongs_to relationships: {len(filtered_belongs)} (from {len(self.data['relationships']['belongs_to'])})")
+        
+        # 3. 过滤annotates关系（只保留源节点在有效媒体会话中的关系）
+        original_annotates_count = len(self.data['relationships']['annotates'])
+        filtered_annotates = [rel for rel in self.data['relationships']['annotates']
+                             if rel['source'] in self.valid_media_ids]
+        self.data['relationships']['annotates'] = filtered_annotates
+        print(f"Filtered annotates relationships: {len(filtered_annotates)} (from {original_annotates_count})")
+        
+        # 4. 获取有效的标签ID（通过过滤后的annotates关系的目标节点）
+        valid_label_ids = {rel['target'] for rel in filtered_annotates}
+        
+        # 5. 过滤labels节点（只保留ID在有效标签ID集合中的标签）
+        original_labels_count = len(self.data['nodes']['labels'])
+        filtered_labels = [label for label in self.data['nodes']['labels'] 
+                          if label['id'] in valid_label_ids]
+        self.data['nodes']['labels'] = filtered_labels
+        print(f"Filtered labels: {len(filtered_labels)} (from {original_labels_count})")
+        
+        # 更新关系
+        self.data['relationships']['publishes'] = filtered_publishes
+        self.data['relationships']['belongs_to'] = filtered_belongs
+
     def process(self):
         """执行完整的处理流程"""
         print("Starting data cleaning process...")
         self.load_data()
+        self.filter_media_sessions()  # 先过滤媒体会话
         self.identify_valid_users()
         self.filter_nodes()
         self.filter_relationships()

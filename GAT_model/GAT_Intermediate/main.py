@@ -22,11 +22,13 @@ def main():
     
     # 初始化模型和数据加载器
     model = HeteroGAT().to(device)
+    # 创建数据加载器
     data_loader = DataLoader(
-        uri=neo4j_info['uri'],
-        user=neo4j_info['username'],
-        password=neo4j_info['password'],
-        device=device
+        uri=neo4j_info.get('uri', "bolt://localhost:7687"),
+        user=neo4j_info.get('user', "neo4j"),
+        password=neo4j_info.get('password', "password"),
+        device=device,
+        debug=True  # 启用调试模式，但会限制输出数量
     )
     
     try:
@@ -42,11 +44,19 @@ def main():
         print(f"Validation samples: {len(val_ids)}")
         
         # 训练模型
-        train_model(model, data_loader, train_ids, val_ids)
+        model = train_model(
+            model=model,
+            data_loader=data_loader,
+            train_ids=train_ids,
+            val_ids=val_ids,
+            num_epochs=10,
+            lr=0.001,
+            debug=True  # 启用调试模式，但会限制输出数量
+        )
         
     finally:
         # 确保关闭数据库连接
         data_loader.close()
 
 if __name__ == "__main__":
-    main() 
+    main()
