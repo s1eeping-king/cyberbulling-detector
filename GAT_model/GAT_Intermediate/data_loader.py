@@ -285,3 +285,140 @@ class DataLoader:
     def close(self):
         """关闭数据库连接"""
         self.driver.close()
+
+    def load_batch(self, media_session_ids: List[str]) -> Dict:
+        """批量加载数据
+        Args:
+            media_session_ids: 媒体会话ID列表
+        Returns:
+            Dict: 包含合并后的图数据和标签的字典
+        """
+        batch_graphs = []
+        batch_labels = []
+        
+        # 收集批次中的所有图和标签
+        valid_count = 0
+        for media_id in media_session_ids:
+            graph = self.load_subgraph(media_id)
+            labels = self.get_labels(media_id)
+            
+            if graph is not None and labels is not None:
+                batch_graphs.append(graph)
+                batch_labels.append(labels)
+                valid_count += 1
+        
+        if valid_count > 0:
+            if self.debug:
+                print(f"\n处理批次样本数: {valid_count}/{len(media_session_ids)}")
+            
+            # 合并图数据
+            merged_data = self._merge_graphs(batch_graphs)
+            if merged_data is None:
+                return None
+                
+            # 添加标签到合并数据中
+            merged_data['labels'] = torch.stack(batch_labels)
+            
+            if self.debug:
+                # 打印每种节点类型的数量
+                for node_type, x in merged_data['x_dict'].items():
+                    print(f"{node_type} 节点数量: {x.shape[0]}")
+                # 打印每种边类型的数量
+                for edge_type, edge_index in merged_data['edge_index_dict'].items():
+                    print(f"{edge_type} 边数量: {edge_index.shape[1]}")
+                print(f"标签形状: {merged_data['labels'].shape}")
+            
+            return merged_data
+        
+        return None
+
+    def _merge_graphs(self, graphs: List[HeteroData]) -> Dict:
+        """合并多个异构图
+        Args:
+            graphs: HeteroData对象列表
+        Returns:
+            Dict: 包含合并后的节点特征和边索引的字典
+        """
+        if not graphs:
+            return None
+        
+        # 初始化合并后的数据结构
+        merged_data = {
+            'x_dict': {},
+            'edge_index_dict': {},
+            'batch_size': len(graphs)
+        }
+        
+        # 获取所有节点类型和边类型
+        node_types = set()
+        edge_types = set()
+        for graph in graphs:
+            node_types.update(graph.node_types)
+            edge_types.update(graph.edge_types)
+        
+        # 记录每种节点类型的累积数量，用于边索引的偏移
+        cumsum = {node_type: 0 for node_type in node_types}
+        
+        # 合并节点特征
+        for node_type in node_types:
+            features = []
+            for graph in graphs:
+                if node_type in graph.node_types and hasattr(graph[node_type], 'x'):
+                    if graph[node_type].x.shape[0] > 0:  # 只添加非空特征
+                        features.append(graph[node_type].x)
+                        cumsum[node_type] += graph[node_type].x.shape[0]
+                    else:
+                        # 如果特征为空，创建一个具有正确维度的零张量
+                        feature_dim = self._get_feature_dim(node_type)
+                        empty_feature = torch.zeros((1, feature_dim), device=self.device)
+                        features.append(empty_feature)
+                        cumsum[node_type] += 1
+            
+            if features:
+                merged_data['x_dict'][node_type] = torch.cat(features, dim=0)
+                if self.debug:
+                    print(f"合并后 {node_type} 节点特征形状: {merged_data['x_dict'][node_type].shape}")
+            else:
+                # 如果没有这种类型的节点，创建一个空张量
+                feature_dim = self._get_feature_dim(node_type)
+                merged_data['x_dict'][node_type] = torch.zeros((1, feature_dim), device=self.device)
+                if self.debug:
+                    print(f"创建空 {node_type} 节点特征形状: {merged_data['x_dict'][node_type].shape}")
+        
+        # 合并边索引
+        offset = {node_type: 0 for node_type in node_types}
+        for edge_type in edge_types:
+            edge_indices = []
+            for graph in graphs:
+                if edge_type in graph.edge_types:
+                    edge_index = graph[edge_type].edge_index.clone()
+                    if edge_index.shape[1] > 0:  # 只处理非空边
+                        # 更新源节点和目标节点的索引
+                        edge_index[0] += offset[edge_type[0]]
+                        edge_index[1] += offset[edge_type[-1]]
+                        edge_indices.append(edge_index)
+                # 更新偏移量
+                if edge_type[0] in graph and hasattr(graph[edge_type[0]], 'x'):
+                    offset[edge_type[0]] += max(1, graph[edge_type[0]].x.shape[0])
+                if edge_type[-1] in graph and hasattr(graph[edge_type[-1]], 'x'):
+                    offset[edge_type[-1]] += max(1, graph[edge_type[-1]].x.shape[0])
+            
+            if edge_indices:
+                merged_data['edge_index_dict'][edge_type] = torch.cat(edge_indices, dim=1)
+                if self.debug:
+                    print(f"合并后 {edge_type} 边索引形状: {merged_data['edge_index_dict'][edge_type].shape}")
+            else:
+                merged_data['edge_index_dict'][edge_type] = torch.zeros((2, 0), dtype=torch.long, device=self.device)
+                if self.debug:
+                    print(f"创建空 {edge_type} 边索引")
+        
+        return merged_data
+
+    def _get_feature_dim(self, node_type: str) -> int:
+        """获取节点类型的特征维度"""
+        dims = {
+            'user': 1540,        # 768(bert_username) + 768(bert_description) + 4(other_features)
+            'media_session': 777,  # 768(bert_description) + 9(other_features)
+            'comment': 769       # 768(bert_text) + 1(postId)
+        }
+        return dims.get(node_type, 64)

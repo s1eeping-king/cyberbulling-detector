@@ -78,7 +78,7 @@ class HeteroGAT(nn.Module):
         
         # 预测层 - 针对媒体会话节点
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim * 3, hidden_dim),  # 修改输入维度为 hidden_dim * 3
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
@@ -198,53 +198,70 @@ class HeteroGAT(nn.Module):
                         # 正确的多头注意力处理方式：
                         # 1. 首先reshape为[num_nodes, num_heads, out_channels]
                         h = h.view(-1, 4, self.hidden_dim)  # 4是heads数量
-                        # 2. 对注意力头维度取平均
-                        h = h.mean(dim=1)  # 现在形状为[num_nodes, hidden_dim]
+                        # 2. 在heads维度上取平均
+                        h = h.mean(dim=1)
                     
                     # 应用归一化
-                    if h.shape[0] > 1:  # 只有当有多个节点时才应用LayerNorm
-                        h = self.batch_norms[i][node_type](h)
-                    
-                    # 残差连接
-                    if node_type in valid_h_dict:
-                        h = h + valid_h_dict[node_type]  # 残差连接
-                    
+                    h = self.batch_norms[i][node_type](h)
                     # 应用ReLU和Dropout
                     h = F.relu(h)
                     h = F.dropout(h, p=self.dropout, training=self.training)
-                    
-                    # 更新特征
+                    # 添加残差连接
+                    if node_type in initial_h_dict:
+                        h = h + initial_h_dict[node_type]
                     valid_h_dict[node_type] = h
             
             # 更新h_dict
             h_dict.update(valid_h_dict)
         
-        # 3. 预测 - 使用媒体会话节点的特征来预测标签
-        if 'media_session' in h_dict:
-            media_features = h_dict['media_session']
+        # 3. 注意力聚合
+        # 为每个节点类型计算注意力权重
+        attention_weights = {}
+        for node_type, h in h_dict.items():
+            if node_type in self.attention:
+                # 计算注意力权重
+                weights = self.attention[node_type](h)
+                attention_weights[node_type] = weights
+        
+        # 聚合每个节点类型的特征
+        aggregated_features = []
+        for node_type, h in h_dict.items():
+            if node_type in attention_weights:
+                # 应用注意力权重
+                weighted_h = h * attention_weights[node_type]
+                # 对每个节点类型的特征进行全局平均池化
+                pooled_h = weighted_h.mean(dim=0, keepdim=True)
+                aggregated_features.append(pooled_h)
+        
+        # 如果有多个节点类型的特征，将它们拼接在一起
+        if aggregated_features:
+            combined_features = torch.cat(aggregated_features, dim=1)
+            # 计算每个batch中的样本数
+            batch_size = x_dict['media_session'].shape[0]
+            # 复制特征以匹配batch大小
+            combined_features = combined_features.repeat(batch_size, 1)
+            # 应用分类器
+            outputs = self.classifier(combined_features)
             
-            # 添加L2正则化
-            media_features = F.normalize(media_features, p=2, dim=1)
+            # 打印分类器各层的输出范围（仅在第一次前向传播时）
+            if not hasattr(self, '_printed_classifier_ranges'):
+                with torch.no_grad():
+                    x = combined_features
+                    for i, layer in enumerate(self.classifier):
+                        x = layer(x)
+                        if isinstance(layer, nn.Linear):
+                            print(f"\n分类器_Linear_{i} 输出范围:")
+                            print(f"[{x.min().item():.3f}, {x.max().item():.3f}]")
+                        elif isinstance(layer, nn.ReLU):
+                            print(f"\n分类器_ReLU_{i} 输出范围:")
+                            print(f"[{x.min().item():.3f}, {x.max().item():.3f}]")
+                self._printed_classifier_ranges = True
             
-            # 使用注意力权重
-            attention_weights = self.attention['media_session'](media_features)
-            media_features = media_features * attention_weights
-            
-            # 跟踪分类器每一层的输出
-            x = media_features
-            for i, layer in enumerate(self.classifier):
-                x = layer(x)
-                if isinstance(layer, (nn.Linear, nn.ReLU)) and not hasattr(self, '_first_forward'):
-                    print(f"\n分类器_{type(layer).__name__}_{i} 输出范围:")
-                    print(f"[{x.min().item():.3f}, {x.max().item():.3f}]")
-            
-            if not hasattr(self, '_first_forward'):
-                self._first_forward = True
-            
-            return x
+            return outputs
         else:
-            # 如果没有媒体会话节点，返回零张量
-            return torch.zeros((1, 2), device=next(self.parameters()).device)
+            # 如果没有有效的特征，返回零张量
+            batch_size = x_dict['media_session'].shape[0]
+            return torch.zeros((batch_size, 2), device=x_dict['media_session'].device)
 
 def calculate_metrics(outputs, labels):
     """计算分类指标"""

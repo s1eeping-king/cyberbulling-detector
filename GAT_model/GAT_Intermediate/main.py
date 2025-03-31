@@ -50,8 +50,7 @@ def main():
             train_ids=train_ids,
             val_ids=val_ids,
             num_epochs=10,
-            lr=0.001,
-            debug=True  # 启用调试模式，但会限制输出数量
+            lr=0.001
         )
         
     finally:

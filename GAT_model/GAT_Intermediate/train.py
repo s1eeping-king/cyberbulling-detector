@@ -10,12 +10,13 @@ def train_model(model: HeteroGAT,
                val_ids: List[str],
                num_epochs: int = 10,
                lr: float = 0.001,
-               debug: bool = False):
+               batch_size: int = 32):
     """训练模型"""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     
     # 获取设备
     device = next(model.parameters()).device
+    print(f"\n使用设备: {device}")
     
     # 先计算类别权重
     print("\n计算类别权重...")
@@ -25,16 +26,23 @@ def train_model(model: HeteroGAT,
     
     # 正确计算每个类别的正负样本数
     sample_count = 0
-    for media_id in train_ids:
-        labels = data_loader.get_labels(media_id)
-        if labels is not None:
-            pos_samples += (labels == 1).float()
-            neg_samples += (labels == 0).float()
-            valid_samples += 1
+    for i in range(0, len(train_ids), batch_size):
+        batch_ids = train_ids[i:i + batch_size]
+        batch_data = data_loader.load_batch(batch_ids)
+        if batch_data is None:
+            continue
+            
+        batch_labels = batch_data['labels'].to(device)
+        if batch_labels is not None:
+            pos_samples += (batch_labels == 1).float().sum(dim=0)
+            neg_samples += (batch_labels == 0).float().sum(dim=0)
+            valid_samples += batch_labels.size(0)
             sample_count += 1
-            # 只显示前3个样本的标签
+            # 只显示前3个batch的标签统计
             if sample_count <= 3:
-                print(f"\n样本 {sample_count} 标签: {labels.cpu().numpy()}")
+                print(f"\nBatch {sample_count} 标签统计:")
+                print(f"Bullying - 正样本: {(batch_labels[:, 0] == 1).sum().item()}, 负样本: {(batch_labels[:, 0] == 0).sum().item()}")
+                print(f"Aggression - 正样本: {(batch_labels[:, 1] == 1).sum().item()}, 负样本: {(batch_labels[:, 1] == 0).sum().item()}")
     
     if valid_samples > 0:
         print(f"\n数据统计 (总样本数: {valid_samples}):")
@@ -60,41 +68,52 @@ def train_model(model: HeteroGAT,
         total_loss = 0.0
         valid_batches = 0
         
-        for media_id in train_ids:
-            # 加载子图和标签
-            data = data_loader.load_subgraph(media_id)
-            labels = data_loader.get_labels(media_id)
+        # 训练阶段
+        for i in range(0, len(train_ids), batch_size):
+            batch_ids = train_ids[i:i + batch_size]
+            batch_data = data_loader.load_batch(batch_ids)
             
-            if data is None or labels is None:
+            if batch_data is None:
                 continue
                 
             valid_batches += 1
             
-            # 准备输入数据
-            x_dict = {node_type: data[node_type].x for node_type in data.node_types}
-            edge_index_dict = {edge_type: data[edge_type].edge_index for edge_type in data.edge_types}
-            
-            # 前向传播
-            outputs = model(x_dict, edge_index_dict)
-            
-            # 确保标签形状与输出匹配
-            if outputs.shape[0] != 1:
-                outputs = outputs.mean(dim=0, keepdim=True)
-            labels = labels.view(1, -1)
-            
-            # 只在第一个epoch的前2个batch显示详细信息
-            if epoch == 0 and valid_batches < 2:
-                print(f"\nBatch {valid_batches} - 输出: {torch.sigmoid(outputs).detach().cpu().numpy().round(3)}, 标签: {labels.cpu().numpy()}")
-            
-            # 计算损失
-            loss = criterion(outputs, labels)
-            
-            # 反向传播和优化
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
+            try:
+                # 准备输入数据并移动到正确的设备
+                x_dict = {k: v.to(device) for k, v in batch_data['x_dict'].items()}
+                edge_index_dict = {k: v.to(device) for k, v in batch_data['edge_index_dict'].items()}
+                batch_labels = batch_data['labels'].to(device)
+                
+                # 前向传播
+                outputs = model(x_dict, edge_index_dict)
+                
+                # 确保标签形状与输出匹配
+                if outputs.shape != batch_labels.shape:
+                    print(f"Warning: Output shape {outputs.shape} != Label shape {batch_labels.shape}")
+                    outputs = outputs.view(batch_labels.shape)
+                
+                # 只在第一个epoch的前2个batch显示详细信息
+                if epoch == 0 and valid_batches <= 2:
+                    print(f"\nBatch {valid_batches} - 输出形状: {outputs.shape}, 标签形状: {batch_labels.shape}")
+                    print(f"输出样例: {torch.sigmoid(outputs[:2]).detach().cpu().numpy().round(3)}")
+                    print(f"标签样例: {batch_labels[:2].cpu().numpy()}")
+                    print(f"节点数量: {', '.join(f'{k}: {v.shape[0]}' for k, v in x_dict.items())}")
+                    print(f"边数量: {', '.join(f'{k}: {v.shape[1]}' for k, v in edge_index_dict.items())}")
+                
+                # 计算损失
+                loss = criterion(outputs, batch_labels)
+                
+                # 反向传播和优化
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                total_loss += loss.item()
+                
+            except RuntimeError as e:
+                print(f"\nError in batch {valid_batches}: {str(e)}")
+                print("跳过此批次...")
+                continue
         
         avg_train_loss = total_loss / max(1, valid_batches)
         
@@ -106,34 +125,39 @@ def train_model(model: HeteroGAT,
         all_labels = []
         
         with torch.no_grad():
-            for media_id in val_ids:
-                # 加载子图和标签
-                data = data_loader.load_subgraph(media_id)
-                labels = data_loader.get_labels(media_id)
+            for i in range(0, len(val_ids), batch_size):
+                batch_ids = val_ids[i:i + batch_size]
+                batch_data = data_loader.load_batch(batch_ids)
                 
-                if data is None or labels is None:
+                if batch_data is None:
                     continue
                     
-                # 准备输入数据
-                x_dict = {node_type: data[node_type].x for node_type in data.node_types}
-                edge_index_dict = {edge_type: data[edge_type].edge_index for edge_type in data.edge_types}
-                
-                # 前向传播
-                outputs = model(x_dict, edge_index_dict)
-                
-                # 确保标签形状与输出匹配
-                if outputs.shape[0] != 1:
-                    outputs = outputs.mean(dim=0, keepdim=True)
-                labels = labels.view(1, -1)
-                
-                # 计算损失
-                loss = criterion(outputs, labels)
-                
-                val_loss += loss.item()
-                val_batch_count += 1
-                
-                all_outputs.append(outputs)
-                all_labels.append(labels)
+                try:
+                    val_batch_count += 1
+                    
+                    # 准备输入数据并移动到正确的设备
+                    x_dict = {k: v.to(device) for k, v in batch_data['x_dict'].items()}
+                    edge_index_dict = {k: v.to(device) for k, v in batch_data['edge_index_dict'].items()}
+                    batch_labels = batch_data['labels'].to(device)
+                    
+                    # 前向传播
+                    outputs = model(x_dict, edge_index_dict)
+                    
+                    # 确保标签形状与输出匹配
+                    if outputs.shape != batch_labels.shape:
+                        outputs = outputs.view(batch_labels.shape)
+                    
+                    # 计算损失
+                    loss = criterion(outputs, batch_labels)
+                    val_loss += loss.item()
+                    
+                    all_outputs.append(outputs)
+                    all_labels.append(batch_labels)
+                    
+                except RuntimeError as e:
+                    print(f"\nError in validation batch {val_batch_count}: {str(e)}")
+                    print("跳过此批次...")
+                    continue
         
         avg_val_loss = val_loss / max(1, val_batch_count)
         
@@ -147,6 +171,7 @@ def train_model(model: HeteroGAT,
             print(f"\n{'='*20} 评估指标 {'='*20}")
             print(f"Epoch {epoch+1}/{num_epochs}{'='*40}")
             print(f"训练损失: {avg_train_loss:.4f}, 验证损失: {avg_val_loss:.4f}")
+            print(f"训练批次数: {valid_batches}, 验证批次数: {val_batch_count}")
             
             # 霸凌检测指标
             print(f"\n--- 霸凌检测指标 ---")
