@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HeteroGAT Network Architecture</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#5D5CDE',
+                    }
+                }
+            }
+        }
+        
+        // 检测暗黑模式
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            document.documentElement.classList.add('dark');
+        }
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => {
+            if (event.matches) {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+        });
+    </script>
+    <style>
+        .node {
+            transition: all 0.3s ease;
+        }
+        .node:hover {
+            filter: brightness(1.1);
+            transform: scale(1.02);
+        }
+        .edge {
+            transition: all 0.3s ease;
+        }
+        .edge:hover {
+            stroke-width: 2.5;
+        }
+        .tooltip {
+            display: none;
+            position: absolute;
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
+            font-size: 14px;
+            max-width: 250px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .dark .tooltip {
+            background-color: rgba(30, 30, 30, 0.9);
+            color: white;
+            border: 1px solid #555;
+        }
+        .light .tooltip {
+            background-color: rgba(255, 255, 255, 0.9);
+            color: black;
+            border: 1px solid #ddd;
+        }
+        .node:hover + .tooltip, .edge:hover + .tooltip {
+            display: block;
+        }
+    </style>
+</head>
+<body class="bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 min-h-screen p-4">
+    <div class="max-w-6xl mx-auto">
+        <h1 class="text-2xl font-bold mb-6 text-center text-primary">HeteroGAT 神经网络架构</h1>
+        
+        <div class="overflow-x-auto bg-gray-50 dark:bg-gray-800 rounded-lg shadow-lg p-4 mb-8">
+            <svg id="architecture" width="960" height="800" class="mx-auto"></svg>
+        </div>
+        
+        <div id="tooltip" class="tooltip"></div>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
+            <div class="bg-gray-50 dark:bg-gray-800 rounded-lg shadow-lg p-4">
+                <h2 class="text-xl font-semibold mb-3 text-primary">网络概览</h2>
+                <ul class="list-disc pl-5 space-y-2">
+                    <li><span class="font-medium">输入节点类型</span>: 用户(User), 媒体会话(Media Session), 评论(Comment)</li>
+                    <li><span class="font-medium">隐藏维度</span>: 128</li>
+                    <li><span class="font-medium">网络层数</span>: 2</li>
+                    <li><span class="font-medium">输出</span>: 二分类 (霸凌和攻击性)</li>
+                </ul>
+            </div>
+            
+            <div class="bg-gray-50 dark:bg-gray-800 rounded-lg shadow-lg p-4">
+                <h2 class="text-xl font-semibold mb-3 text-primary">边类型</h2>
+                <ul class="list-disc pl-5 space-y-2">
+                    <li>用户 → 发布 → 媒体会话</li>
+                    <li>用户 → 创建 → 评论</li>
+                    <li>评论 → 提及 → 用户</li>
+                    <li>评论 → 属于 → 媒体会话</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const svg = document.getElementById('architecture');
+            const tooltip = document.getElementById('tooltip');
+            
+            // 颜色设置
+            const colors = {
+                user: '#4299E1',        // 蓝色
+                media_session: '#F6AD55', // 橙色
+                comment: '#68D391',     // 绿色
+                edge: '#A0AEC0',        // 灰色
+                layer: '#805AD5',       // 紫色
+                classifier: '#F56565'   // 红色
+            };
+            
+            // 节点类型和维度
+            const nodes = {
+                user: { label: '用户', input_dim: 1540, output_dim: 128 },
+                media_session: { label: '媒体会话', input_dim: 777, output_dim: 128 },
+                comment: { label: '评论', input_dim: 769, output_dim: 128 }
+            };
+            
+            // 创建SVG元素
+            const svgNS = "http://www.w3.org/2000/svg";
+            
+            // 基本参数
+            const margin = { top: 30, right: 50, bottom: 30, left: 50 };
+            const width = 960 - margin.left - margin.right;
+            const height = 800 - margin.top - margin.bottom;
+            
+            // 绘制函数
+            function drawNetwork() {
+                // 清空SVG
+                while (svg.firstChild) {
+                    svg.removeChild(svg.firstChild);
+                }
+                
+                // 调整颜色以适应暗/亮模式
+                const isDarkMode = document.documentElement.classList.contains('dark');
+                const textColor = isDarkMode ? '#F7FAFC' : '#2D3748';
+                const edgeColor = isDarkMode ? '#718096' : '#A0AEC0';
+                
+                // 创建主绘图组
+                const mainGroup = document.createElementNS(svgNS, 'g');
+                mainGroup.setAttribute('transform', `translate(${margin.left}, ${margin.top})`);
+                svg.appendChild(mainGroup);
+                
+                // 定义列和层
+                const columns = [
+                    { x: 50, width: 120, title: '输入特征' },
+                    { x: 230, width: 160, title: '编码器' },
+                    { x: 450, width: 160, title: 'GAT/SAGE层' },
+                    { x: 670, width: 160, title: '注意力聚合' },
+                    { x: 830, width: 120, title: '分类器输出' }
+                ];
+                
+                // 绘制列标题
+                columns.forEach(col => {
+                    const title = document.createElementNS(svgNS, 'text');
+                    title.setAttribute('x', col.x + col.width/2);
+                    title.setAttribute('y', 0);
+                    title.setAttribute('text-anchor', 'middle');
+                    title.setAttribute('dominant-baseline', 'middle');
+                    title.setAttribute('font-weight', 'bold');
+                    title.setAttribute('fill', textColor);
+                    title.textContent = col.title;
+                    mainGroup.appendChild(title);
+                });
+                
+                // 节点位置
+                const nodePositions = {
+                    input: {
+                        user: { x: columns[0].x + columns[0].width/2, y: 100 },
+                        media_session: { x: columns[0].x + columns[0].width/2, y: 250 },
+                        comment: { x: columns[0].x + columns[0].width/2, y: 400 }
+                    },
+                    encoder: {
+                        user: { x: columns[1].x + columns[1].width/2, y: 100 },
+                        media_session: { x: columns[1].x + columns[1].width/2, y: 250 },
+                        comment: { x: columns[1].x + columns[1].width/2, y: 400 }
+                    },
+                    gat1: {
+                        user: { x: columns[2].x + columns[2].width/2, y: 100 },
+                        media_session: { x: columns[2].x + columns[2].width/2, y: 250 },
+                        comment: { x: columns[2].x + columns[2].width/2, y: 400 }
+                    },
+                    sage2: {
+                        user: { x: columns[2].x + columns[2].width/2, y: 150 },
+                        media_session: { x: columns[2].x + columns[2].width/2, y: 300 },
+                        comment: { x: columns[2].x + columns[2].width/2, y: 450 }
+                    },
+                    attention: {
+                        user: { x: columns[3].x + columns[3].width/2, y: 100 },
+                        media_session: { x: columns[3].x + columns[3].width/2, y: 250 },
+                        comment: { x: columns[3].x + columns[3].width/2, y: 400 }
+                    },
+                    aggregated: { x: columns[3].x + columns[3].width/2, y: 550 },
+                    classifier: [
+                        { x: columns[4].x + columns[4].width/2, y: 500 },
+                        { x: columns[4].x + columns[4].width/2, y: 550 },
+                        { x: columns[4].x + columns[4].width/2, y: 600 }
+                    ],
+                    output: { x: columns[4].x + columns[4].width/2, y: 650 }
+                };
+                
+                // 绘制输入节点
+                for (const [type, info] of Object.entries(nodes)) {
+                    const pos = nodePositions.input[type];
+                    drawNode(mainGroup, pos.x, pos.y, colors[type], 
+                        `${info.label} (${info.input_dim})`, 
+                        `${info.label}节点的输入特征\n维度: ${info.input_dim}`);
+                }
+                
+                // 绘制编码器节点
+                for (const [type, info] of Object.entries(nodes)) {
+                    const pos = nodePositions.encoder[type];
+                    drawNode(mainGroup, pos.x, pos.y, colors[type], 
+                        `${info.label}编码器\nLinear→LN→ReLU`,
+                        `将输入特征编码到隐藏维度\n输入: ${info.input_dim}, 输出: ${info.output_dim}`);
+                    
+                    // 连接输入到编码器
+                    drawEdge(mainGroup, 
+                        nodePositions.input[type].x, nodePositions.input[type].y,
+                        pos.x, pos.y, edgeColor,
+                        `输入到编码器的连接\n从 ${info.input_dim} 维到 ${info.output_dim} 维`);
+                }
+                
+                // 绘制GAT/SAGE层节点
+                for (const [type, info] of Object.entries(nodes)) {
+                    // 绘制GAT层
+                    const posGAT = nodePositions.gat1[type];
+                    drawNode(mainGroup, posGAT.x, posGAT.y, colors.layer, 
+                        `${info.label} GAT\n(头数=4)`,
+                        `图注意力卷积层\n维度: ${info.output_dim}, 头数: 4`);
+                    
+                    // 绘制SAGE层
+                    const posSAGE = nodePositions.sage2[type];
+                    drawNode(mainGroup, posSAGE.x, posSAGE.y, colors.layer, 
+                        `${info.label} SAGE`,
+                        `GraphSAGE卷积层\n维度: ${info.output_dim}`);
+                    
+                    // 连接编码器到GAT
+                    drawEdge(mainGroup, 
+                        nodePositions.encoder[type].x, nodePositions.encoder[type].y,
+                        posGAT.x, posGAT.y, edgeColor,
+                        `编码器到GAT的连接\n维度: ${info.output_dim}`);
+                    
+                    // 连接GAT到SAGE
+                    drawEdge(mainGroup, 
+                        posGAT.x, posGAT.y,
+                        posSAGE.x, posSAGE.y, edgeColor,
+                        `GAT到SAGE的连接\n维度: ${info.output_dim}`);
+                }
+                
+                // 绘制节点之间的图注意力边 (GAT层内部连接)
+                const edgeTypes = [
+                    { src: 'user', rel: 'publishes', dst: 'media_session' },
+                    { src: 'user', rel: 'creates', dst: 'comment' },
+                    { src: 'comment', rel: 'mentions', dst: 'user' },
+                    { src: 'comment', rel: 'belongs_to', dst: 'media_session' }
+                ];
+                
+                edgeTypes.forEach(edge => {
+                    // GAT层的边
+                    drawEdge(mainGroup, 
+                        nodePositions.gat1[edge.src].x + 30, nodePositions.gat1[edge.src].y,
+                        nodePositions.gat1[edge.dst].x - 30, nodePositions.gat1[edge.dst].y, 
+                        colors.edge, `边类型: ${edge.src} ${edge.rel} ${edge.dst}`, true, edge.rel);
+                    
+                    // SAGE层的边
+                    drawEdge(mainGroup, 
+                        nodePositions.sage2[edge.src].x + 30, nodePositions.sage2[edge.src].y,
+                        nodePositions.sage2[edge.dst].x - 30, nodePositions.sage2[edge.dst].y, 
+                        colors.edge, `边类型: ${edge.src} ${edge.rel} ${edge.dst}`, true, edge.rel);
+                });
+                
+                // 绘制注意力机制节点
+                for (const [type, info] of Object.entries(nodes)) {
+                    const pos = nodePositions.attention[type];
+                    drawNode(mainGroup, pos.x, pos.y, colors[type], 
+                        `${info.label}注意力`,
+                        `计算节点特征的注意力权重\n维度: ${info.output_dim} → 1`);
+                    
+                    // 连接SAGE到注意力
+                    drawEdge(mainGroup, 
+                        nodePositions.sage2[type].x, nodePositions.sage2[type].y,
+                        pos.x, pos.y, edgeColor,
+                        `SAGE到注意力的连接\n维度: ${info.output_dim}`);
+                }
+                
+                // 绘制特征聚合节点
+                drawNode(mainGroup, nodePositions.aggregated.x, nodePositions.aggregated.y, 
+                    '#9F7AEA', '特征聚合',
+                    `聚合所有节点类型的特征\n维度: ${128*3} (3个节点类型各128维)`);
+                
+                // 连接注意力到聚合
+                for (const type of Object.keys(nodes)) {
+                    drawEdge(mainGroup, 
+                        nodePositions.attention[type].x, nodePositions.attention[type].y,
+                        nodePositions.aggregated.x, nodePositions.aggregated.y, edgeColor,
+                        `${nodes[type].label}注意力到特征聚合的连接`);
+                }
+                
+                // 绘制分类器节点
+                const classifierInfo = [
+                    { name: "Linear → LN → ReLU", dim_in: 128*3, dim_out: 128 },
+                    { name: "Linear → LN → ReLU", dim_in: 128, dim_out: 64 },
+                    { name: "Linear", dim_in: 64, dim_out: 2 }
+                ];
+                
+                // 绘制分类器层
+                for (let i = 0; i < classifierInfo.length; i++) {
+                    const pos = nodePositions.classifier[i];
+                    const info = classifierInfo[i];
+                    drawNode(mainGroup, pos.x, pos.y, colors.classifier, 
+                        info.name,
+                        `分类器层 ${i+1}\n输入: ${info.dim_in}, 输出: ${info.dim_out}`);
+                    
+                    // 连接前一层到当前层
+                    if (i === 0) {
+                        // 连接聚合到第一个分类器层
+                        drawEdge(mainGroup, 
+                            nodePositions.aggregated.x, nodePositions.aggregated.y,
+                            pos.x, pos.y, edgeColor,
+                            `特征聚合到分类器的连接\n维度: ${info.dim_in} → ${info.dim_out}`);
+                    } else {
+                        // 连接上一个分类器层到当前层
+                        drawEdge(mainGroup, 
+                            nodePositions.classifier[i-1].x, nodePositions.classifier[i-1].y,
+                            pos.x, pos.y, edgeColor,
+                            `分类器层连接\n维度: ${info.dim_in} → ${info.dim_out}`);
+                    }
+                }
+                
+                // 绘制输出节点
+                drawNode(mainGroup, nodePositions.output.x, nodePositions.output.y, '#F56565', 
+                    '二分类输出 (2)',
+                    '输出两个分类任务的概率:\n1. 霸凌\n2. 攻击性');
+                
+                // 连接最后一个分类器层到输出
+                drawEdge(mainGroup, 
+                    nodePositions.classifier[classifierInfo.length-1].x, 
+                    nodePositions.classifier[classifierInfo.length-1].y,
+                    nodePositions.output.x, nodePositions.output.y, 
+                    edgeColor,
+                    '最终分类器层到输出的连接\n维度: 2');
+                
+                // 绘制框架边界
+                drawSection(mainGroup, columns[2].x - 20, 50, columns[2].width + 40, 450, 'GraphNN层 (×2)');
+                drawSection(mainGroup, columns[4].x - 20, 470, columns[4].width + 40, 200, '分类器');
+            }
+            
+            // 绘制节点函数
+            function drawNode(parent, x, y, color, text, tooltipText) {
+                const nodeGroup = document.createElementNS(svgNS, 'g');
+                nodeGroup.classList.add('node');
+                parent.appendChild(nodeGroup);
+                
+                // 节点矩形
+                const rect = document.createElementNS(svgNS, 'rect');
+                rect.setAttribute('x', x - 50);
+                rect.setAttribute('y', y - 25);
+                rect.setAttribute('width', 100);
+                rect.setAttribute('height', 50);
+                rect.setAttribute('rx', 8);
+                rect.setAttribute('fill', color);
+                rect.setAttribute('opacity', '0.8');
+                rect.setAttribute('stroke', '#333');
+                rect.setAttribute('stroke-width', '1.5');
+                nodeGroup.appendChild(rect);
+                
+                // 节点文本
+                const lines = text.split('\n');
+                const fontSize = lines.length > 1 ? 12 : 14;
+                
+                lines.forEach((line, i) => {
+                    const textElem = document.createElementNS(svgNS, 'text');
+                    textElem.setAttribute('x', x);
+                    textElem.setAttribute('y', y - (lines.length - 1) * 8 + i * 16);
+                    textElem.setAttribute('text-anchor', 'middle');
+                    textElem.setAttribute('dominant-baseline', 'middle');
+                    textElem.setAttribute('fill', 'white');
+                    textElem.setAttribute('font-size', fontSize);
+                    textElem.setAttribute('font-weight', 'bold');
+                    textElem.textContent = line;
+                    nodeGroup.appendChild(textElem);
+                });
+                
+                // 添加鼠标事件
+                nodeGroup.addEventListener('mousemove', (e) => {
+                    showTooltip(e, tooltipText);
+                });
+                
+                nodeGroup.addEventListener('mouseleave', () => {
+                    tooltip.style.display = 'none';
+                });
+                
+                return nodeGroup;
+            }
+            
+            // 绘制边函数
+            function drawEdge(parent, x1, y1, x2, y2, color, tooltipText, curved = false, label = null) {
+                const edgeGroup = document.createElementNS(svgNS, 'g');
+                edgeGroup.classList.add('edge');
+                parent.appendChild(edgeGroup);
+                
+                // 绘制路径
+                const path = document.createElementNS(svgNS, 'path');
+                
+                if (curved) {
+                    // 曲线控制点
+                    const midX = (x1 + x2) / 2;
+                    const midY = (y1 + y2) / 2;
+                    const ctrlX = midX;
+                    const ctrlY = midY - 30;
+                    
+                    path.setAttribute('d', `M${x1},${y1} Q${ctrlX},${ctrlY} ${x2},${y2}`);
+                } else {
+                    path.setAttribute('d', `M${x1},${y1} L${x2},${y2}`);
+                }
+                
+                path.setAttribute('stroke', color);
+                path.setAttribute('stroke-width', '2');
+                path.setAttribute('fill', 'none');
+                
+                // 添加箭头
+                path.setAttribute('marker-end', 'url(#arrow)');
+                edgeGroup.appendChild(path);
+                
+                // 如果有标签，添加边标签
+                if (label) {
+                    const midX = (x1 + x2) / 2;
+                    const midY = curved ? ((y1 + y2) / 2) - 15 : (y1 + y2) / 2;
+                    
+                    const textBg = document.createElementNS(svgNS, 'rect');
+                    textBg.setAttribute('x', midX - 30);
+                    textBg.setAttribute('y', midY - 8);
+                    textBg.setAttribute('width', 60);
+                    textBg.setAttribute('height', 16);
+                    textBg.setAttribute('fill', 'white');
+                    textBg.setAttribute('opacity', '0.7');
+                    textBg.setAttribute('rx', 4);
+                    edgeGroup.appendChild(textBg);
+                    
+                    const textElem = document.createElementNS(svgNS, 'text');
+                    textElem.setAttribute('x', midX);
+                    textElem.setAttribute('y', midY);
+                    textElem.setAttribute('text-anchor', 'middle');
+                    textElem.setAttribute('dominant-baseline', 'middle');
+                    textElem.setAttribute('fill', '#333');
+                    textElem.setAttribute('font-size', '10');
+                    textElem.textContent = label;
+                    edgeGroup.appendChild(textElem);
+                }
+                
+                // 添加鼠标事件
+                edgeGroup.addEventListener('mousemove', (e) => {
+                    showTooltip(e, tooltipText);
+                });
+                
+                edgeGroup.addEventListener('mouseleave', () => {
+                    tooltip.style.display = 'none';
+                });
+                
+                return edgeGroup;
+            }
+            
+            // 绘制分组框
+            function drawSection(parent, x, y, width, height, title) {
+                const sectionGroup = document.createElementNS(svgNS, 'g');
+                parent.appendChild(sectionGroup);
+                
+                // 框
+                const rect = document.createElementNS(svgNS, 'rect');
+                rect.setAttribute('x', x);
+                rect.setAttribute('y', y);
+                rect.setAttribute('width', width);
+                rect.setAttribute('height', height);
+                rect.setAttribute('fill', 'none');
+                rect.setAttribute('stroke', '#666');
+                rect.setAttribute('stroke-width', '1');
+                rect.setAttribute('stroke-dasharray', '5,5');
+                rect.setAttribute('rx', 8);
+                sectionGroup.appendChild(rect);
+                
+                // 标题背景
+                const titleBg = document.createElementNS(svgNS, 'rect');
+                titleBg.setAttribute('x', x + 10);
+                titleBg.setAttribute('y', y - 10);
+                titleBg.setAttribute('width', title.length * 8 + 10);
+                titleBg.setAttribute('height', 20);
+                titleBg.setAttribute('fill', document.documentElement.classList.contains('dark') ? '#1A202C' : 'white');
+                sectionGroup.appendChild(titleBg);
+                
+                // 标题
+                const titleText = document.createElementNS(svgNS, 'text');
+                titleText.setAttribute('x', x + 15);
+                titleText.setAttribute('y', y);
+                titleText.setAttribute('fill', document.documentElement.classList.contains('dark') ? '#E2E8F0' : '#2D3748');
+                titleText.setAttribute('font-size', '12');
+                titleText.textContent = title;
+                sectionGroup.appendChild(titleText);
+            }
+            
+            // 显示提示框
+            function showTooltip(event, text) {
+                const rect = svg.getBoundingClientRect();
+                const x = event.clientX - rect.left + 10;
+                const y = event.clientY - rect.top + 10;
+                
+                tooltip.style.left = `${x}px`;
+                tooltip.style.top = `${y}px`;
+                tooltip.innerHTML = text.replace(/\n/g, '<br>');
+                tooltip.style.display = 'block';
+            }
+            
+            // 创建箭头标记
+            function createArrowMarker() {
+                const defs = document.createElementNS(svgNS, 'defs');
+                svg.appendChild(defs);
+                
+                const marker = document.createElementNS(svgNS, 'marker');
+                marker.setAttribute('id', 'arrow');
+                marker.setAttribute('viewBox', '0 0 10 10');
+                marker.setAttribute('refX', '9');
+                marker.setAttribute('refY', '5');
+                marker.setAttribute('markerWidth', '4');
+                marker.setAttribute('markerHeight', '4');
+                marker.setAttribute('orient', 'auto');
+                defs.appendChild(marker);
+                
+                const path = document.createElementNS(svgNS, 'path');
+                path.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
+                path.setAttribute('fill', document.documentElement.classList.contains('dark') ? '#A0AEC0' : '#718096');
+                marker.appendChild(path);
+            }
+            
+            // 初始化
+            createArrowMarker();
+            drawNetwork();
+            
+            // 添加窗口大小变化监听器
+            window.addEventListener('resize', function() {
+                drawNetwork();
+            });
+            
+            // 添加颜色模式变化监听器
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {
+                createArrowMarker(); // 重新创建箭头标记以更新颜色
+                drawNetwork();
+            });
+        });
+    </script>
+</body>
+</html>

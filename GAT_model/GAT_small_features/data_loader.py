@@ -3,6 +3,7 @@ from torch_geometric.data import HeteroData
 from neo4j import GraphDatabase
 from typing import Dict, List, Tuple
 from transformers import DistilBertTokenizer, DistilBertModel
+import torch.nn as nn
 
 class DataLoader:
     """从Neo4j加载数据并处理为PyG格式的数据加载器"""
@@ -17,6 +18,31 @@ class DataLoader:
         self.tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
         self.bert_model = DistilBertModel.from_pretrained('distilbert-base-uncased').to(device)
         self.bert_model.eval()  # 设置为评估模式
+        
+        # 添加特征转换层
+        self.bert_reducer = nn.Sequential(
+            nn.Linear(768, 128),
+            nn.LayerNorm(128),
+            nn.ReLU(),
+            nn.Linear(128, 16),
+            nn.LayerNorm(16)
+        ).to(device)
+        
+        # 其他特征升维层
+        self.other_features_expander = nn.ModuleDict({
+            'user': nn.Sequential(
+                nn.Linear(4, 8),
+                nn.LayerNorm(8)
+            ).to(device),
+            'media_session': nn.Sequential(
+                nn.Linear(9, 8),
+                nn.LayerNorm(8)
+            ).to(device),
+            'comment': nn.Sequential(
+                nn.Linear(1, 8),
+                nn.LayerNorm(8)
+            ).to(device)
+        })
             
     def get_all_media_sessions(self) -> List[str]:
         """获取所有媒体会话ID"""
@@ -88,9 +114,9 @@ class DataLoader:
             return data
             
     def _get_bert_embedding(self, text: str) -> torch.Tensor:
-        """使用BERT获取文本嵌入"""
+        """使用BERT获取文本嵌入并降维"""
         if not text:
-            return torch.zeros(768, device=self.device)
+            return torch.zeros(16, device=self.device)
             
         # 对文本进行编码
         inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
@@ -99,15 +125,16 @@ class DataLoader:
         # 获取BERT输出
         with torch.no_grad():
             outputs = self.bert_model(**inputs)
-            # 使用[CLS]token的输出作为文本表示
-            embeddings = outputs.last_hidden_state[:, 0, :].squeeze(0)
+            embeddings = outputs.last_hidden_state[:, 0, :].squeeze(0)  # [768]
+            # 降维到16维
+            reduced_embeddings = self.bert_reducer(embeddings)  # [16]
             
-        return embeddings
+        return reduced_embeddings
             
     def _process_media_features(self, media) -> torch.Tensor:
         """处理媒体会话节点特征"""
         if not media:
-            return torch.zeros((0, 10), dtype=torch.float, device=self.device)
+            return torch.zeros((0, 24), dtype=torch.float, device=self.device)  # 16 + 8
             
         properties = dict(media)
         # 将emotion和theme转换为数值特征
@@ -132,9 +159,9 @@ class DataLoader:
             'other': 0.0
         }
         
-        # 获取描述文本的BERT嵌入
+        # 获取描述文本的BERT嵌入并降维
         description = str(properties.get('description', ''))
-        desc_embedding = self._get_bert_embedding(description)
+        desc_embedding = self._get_bert_embedding(description)  # [16]
         
         # 其他特征
         other_features = torch.tensor([
@@ -149,9 +176,11 @@ class DataLoader:
             theme_map.get(properties.get('theme', 'other'), 0.0)
         ], device=self.device)
         
+        # 升维其他特征
+        expanded_other = self.other_features_expander['media_session'](other_features)  # [8]
+        
         # 合并特征并确保是二维张量
-        combined_features = torch.cat([desc_embedding, other_features])
-        # 如果是一维张量，转换为二维
+        combined_features = torch.cat([desc_embedding, expanded_other])  # [24]
         if combined_features.dim() == 1:
             combined_features = combined_features.unsqueeze(0)
         return combined_features
@@ -159,48 +188,47 @@ class DataLoader:
     def _process_comment_features(self, comments) -> torch.Tensor:
         """处理评论节点特征"""
         if not comments:
-            # 返回一个占位符特征，而不是空张量，维度为(1, 769)，与预期的评论特征维度匹配
-            # 768(bert_text) + 1(postId)
-            return torch.zeros((1, 769), dtype=torch.float, device=self.device)
+            return torch.zeros((1, 24), dtype=torch.float, device=self.device)  # 16 + 8
             
         features_list = []
         for comment in comments:
             properties = dict(comment)
-            # 获取评论文本的BERT嵌入
+            # 获取评论文本的BERT嵌入并降维
             text = str(properties.get('text', ''))
-            text_embedding = self._get_bert_embedding(text)
+            text_embedding = self._get_bert_embedding(text)  # [16]
             
             # 其他特征
             other_features = torch.tensor([
                 float(hash(str(properties.get('postId', ''))) % 1000)
             ], device=self.device)
             
+            # 升维其他特征
+            expanded_other = self.other_features_expander['comment'](other_features)  # [8]
+            
             # 合并特征
-            features = torch.cat([text_embedding, other_features])
+            features = torch.cat([text_embedding, expanded_other])  # [24]
             features_list.append(features)
             
         return torch.stack(features_list)
         
     def _process_user_features(self, users) -> Tuple[torch.Tensor, Dict[str, int]]:
-        """处理用户节点特征，返回特征矩阵和ID到索引的映射"""
+        """处理用户节点特征"""
         if not users:
-            return torch.zeros((0, 1540), dtype=torch.float, device=self.device), {}
+            return torch.zeros((0, 40), dtype=torch.float, device=self.device), {}  # 16 * 2 + 8
             
-        # 使用字典进行去重，以用户elementId为键
         unique_users = {}
         id_to_idx = {}
         current_idx = 0
         
         for user in users:
             properties = dict(user)
-            # 修改这里：从获取id改为获取elementId
-            user_id = str(user.element_id)  # 使用节点的element_id属性
+            user_id = str(user.element_id)
             if user_id not in unique_users:
-                # 获取用户名和描述的BERT嵌入
+                # 获取用户名和描述的BERT嵌入并降维
                 username = str(properties.get('username', ''))
                 description = str(properties.get('description', ''))
-                username_embedding = self._get_bert_embedding(username)
-                desc_embedding = self._get_bert_embedding(description)
+                username_embedding = self._get_bert_embedding(username)  # [16]
+                desc_embedding = self._get_bert_embedding(description)  # [16]
                 
                 # 其他特征
                 other_features = torch.tensor([
@@ -210,13 +238,15 @@ class DataLoader:
                     float(properties.get('postCount', 0))
                 ], device=self.device)
                 
+                # 升维其他特征
+                expanded_other = self.other_features_expander['user'](other_features)  # [8]
+                
                 # 合并特征
-                features = torch.cat([username_embedding, desc_embedding, other_features])
+                features = torch.cat([username_embedding, desc_embedding, expanded_other])  # [40]
                 unique_users[user_id] = features
                 id_to_idx[user_id] = current_idx
                 current_idx += 1
             
-        # 将去重后的特征转换为tensor
         features_list = list(unique_users.values())
         return torch.stack(features_list), id_to_idx
         
@@ -397,8 +427,8 @@ class DataLoader:
     def _get_feature_dim(self, node_type: str) -> int:
         """获取节点类型的特征维度"""
         dims = {
-            'user': 1540,        # 768(bert_username) + 768(bert_description) + 4(other_features)
-            'media_session': 777,  # 768(bert_description) + 9(other_features)
-            'comment': 769       # 768(bert_text) + 1(postId)
+            'user': 40,         # 16(bert_username) + 16(bert_description) + 8(other_features)
+            'media_session': 24,  # 16(bert_description) + 8(other_features)
+            'comment': 24       # 16(bert_text) + 8(other_features)
         }
-        return dims.get(node_type, 64)
+        return dims.get(node_type, 16)

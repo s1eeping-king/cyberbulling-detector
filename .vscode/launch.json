@@ -20,7 +20,7 @@
         "name": "Python: GAT主程序",
         "type": "debugpy",
         "request": "launch",
-        "program": "D:\\Work\\PostGraduate\\Dissertations\\multimodal_v5\\GAT_model\\GAT_Intermediate\\main.py",
+        "program": "D:\\Work\\PostGraduate\\Dissertations\\multimodal_v5\\GAT_model\\GAT_senior\\main.py",
         "console": "integratedTerminal",
         "justMyCode": false,
         "env": {

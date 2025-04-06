@@ -1,8 +1,10 @@
 import torch
-from torch_geometric.data import HeteroData
+from torch_geometric.data import HeteroData, Batch
 from neo4j import GraphDatabase
 from typing import Dict, List, Tuple
 from transformers import DistilBertTokenizer, DistilBertModel
+from torch_geometric.loader import DataLoader as PyGDataLoader
+import torch.nn as nn
 
 class DataLoader:
     """从Neo4j加载数据并处理为PyG格式的数据加载器"""
@@ -17,6 +19,10 @@ class DataLoader:
         self.tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
         self.bert_model = DistilBertModel.from_pretrained('distilbert-base-uncased').to(device)
         self.bert_model.eval()  # 设置为评估模式
+        
+        # 添加BERT特征降维层
+        self.bert_dim = 128  # 降维后的BERT特征维度
+        self.bert_projection = nn.Linear(768, self.bert_dim).to(device)
             
     def get_all_media_sessions(self) -> List[str]:
         """获取所有媒体会话ID"""
@@ -64,7 +70,36 @@ class DataLoader:
             data['media_session'].x = self._process_media_features(result['m'])
             data['comment'].x = self._process_comment_features(result['comments'])
             
-            # 3. 处理边索引，使用已建立的用户ID映射
+            # 3. 添加super节点 - 使用正确的维度
+            super_dim = self._get_feature_dim('super')  # 现在会返回128
+            data['super'].x = torch.zeros((1, super_dim), dtype=torch.float, device=self.device)
+            
+            # 4. 创建到super节点的单向边
+            # user -> super
+            num_users = data['user'].x.shape[0]
+            if num_users > 0:
+                data['user', 'to_super', 'super'].edge_index = torch.tensor([
+                    list(range(num_users)),  # source nodes
+                    [0] * num_users          # target node (super node)
+                ], dtype=torch.long, device=self.device)
+            
+            # media_session -> super
+            num_media = data['media_session'].x.shape[0]
+            if num_media > 0:
+                data['media_session', 'to_super', 'super'].edge_index = torch.tensor([
+                    list(range(num_media)),
+                    [0] * num_media
+                ], dtype=torch.long, device=self.device)
+            
+            # comment -> super
+            num_comments = data['comment'].x.shape[0]
+            if num_comments > 0:
+                data['comment', 'to_super', 'super'].edge_index = torch.tensor([
+                    list(range(num_comments)),
+                    [0] * num_comments
+                ], dtype=torch.long, device=self.device)
+            
+            # 5. 处理原有的边索引
             data['comment', 'belongs_to', 'media_session'].edge_index = self._process_edge_index(
                 result['belongs_to_rels'], 
                 {'comment': data['comment'].x.shape[0], 'media_session': data['media_session'].x.shape[0]}
@@ -88,56 +123,35 @@ class DataLoader:
             return data
             
     def _get_bert_embedding(self, text: str) -> torch.Tensor:
-        """使用BERT获取文本嵌入"""
+        """使用BERT获取文本嵌入并降维"""
         if not text:
-            return torch.zeros(768, device=self.device)
+            return torch.zeros(self.bert_dim, device=self.device)
             
         # 对文本进行编码
         inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         
-        # 获取BERT输出
+        # 获取BERT输出并降维
         with torch.no_grad():
             outputs = self.bert_model(**inputs)
-            # 使用[CLS]token的输出作为文本表示
-            embeddings = outputs.last_hidden_state[:, 0, :].squeeze(0)
+            embeddings = outputs.last_hidden_state[:, 0, :].squeeze(0)  # [768]
+            projected_embeddings = self.bert_projection(embeddings)  # [128]
             
-        return embeddings
+        return projected_embeddings
             
     def _process_media_features(self, media) -> torch.Tensor:
         """处理媒体会话节点特征"""
         if not media:
-            return torch.zeros((0, 10), dtype=torch.float, device=self.device)
+            return torch.zeros((0, self.bert_dim + 9), dtype=torch.float, device=self.device)
             
         properties = dict(media)
-        # 将emotion和theme转换为数值特征
-        emotion_map = {
-            'neutral': 0.0,
-            'joy': 1.0,
-            'sad': -1.0,
-            'love': 2.0,
-            'surprise': 3.0,
-            'fear': -2.0,
-            'anger': -3.0
-        }
-        theme_map = {
-            'people': 1.0,
-            'person': 2.0,
-            'indoor': 3.0,
-            'outdoor': 4.0,
-            'cartoon': 5.0,
-            'text': 6.0,
-            'activity': 7.0,
-            'animal': 8.0,
-            'other': 0.0
-        }
         
-        # 获取描述文本的BERT嵌入
+        # BERT特征
         description = str(properties.get('description', ''))
-        desc_embedding = self._get_bert_embedding(description)
+        desc_embedding = self._get_bert_embedding(description)  # [128]
         
-        # 其他特征
-        other_features = torch.tensor([
+        # 数值特征（进行归一化）
+        numerical_features = torch.tensor([
             float(properties.get('likeCount', 0)),
             float(properties.get('commentCount', 0)),
             float(properties.get('loopCount', 0)),
@@ -145,38 +159,36 @@ class DataLoader:
             float(properties.get('emotion_confidence', 0)),
             float(properties.get('theme_confidence', 0)),
             float(properties.get('created', '0').replace('T', ' ').replace('Z', '').count(':')),
-            emotion_map.get(properties.get('emotion', 'neutral'), 0.0),
-            theme_map.get(properties.get('theme', 'other'), 0.0)
+            self._get_emotion_encoding(properties.get('emotion', 'neutral')),
+            self._get_theme_encoding(properties.get('theme', 'other'))
         ], device=self.device)
         
-        # 合并特征并确保是二维张量
-        combined_features = torch.cat([desc_embedding, other_features])
-        # 如果是一维张量，转换为二维
-        if combined_features.dim() == 1:
-            combined_features = combined_features.unsqueeze(0)
-        return combined_features
+        # 对数变换处理大数值
+        numerical_features[:4] = torch.log1p(numerical_features[:4])
+        
+        # 合并特征
+        combined_features = torch.cat([desc_embedding, numerical_features])
+        return combined_features.unsqueeze(0) if combined_features.dim() == 1 else combined_features
         
     def _process_comment_features(self, comments) -> torch.Tensor:
         """处理评论节点特征"""
         if not comments:
-            # 返回一个占位符特征，而不是空张量，维度为(1, 769)，与预期的评论特征维度匹配
-            # 768(bert_text) + 1(postId)
-            return torch.zeros((1, 769), dtype=torch.float, device=self.device)
+            return torch.zeros((1, self.bert_dim + 1), dtype=torch.float, device=self.device)
             
         features_list = []
         for comment in comments:
             properties = dict(comment)
-            # 获取评论文本的BERT嵌入
+            # BERT特征
             text = str(properties.get('text', ''))
-            text_embedding = self._get_bert_embedding(text)
+            text_embedding = self._get_bert_embedding(text)  # [128]
             
-            # 其他特征
-            other_features = torch.tensor([
+            # ID特征
+            id_feature = torch.tensor([
                 float(hash(str(properties.get('postId', ''))) % 1000)
             ], device=self.device)
             
             # 合并特征
-            features = torch.cat([text_embedding, other_features])
+            features = torch.cat([text_embedding, id_feature])
             features_list.append(features)
             
         return torch.stack(features_list)
@@ -184,39 +196,39 @@ class DataLoader:
     def _process_user_features(self, users) -> Tuple[torch.Tensor, Dict[str, int]]:
         """处理用户节点特征，返回特征矩阵和ID到索引的映射"""
         if not users:
-            return torch.zeros((0, 1540), dtype=torch.float, device=self.device), {}
+            return torch.zeros((0, self.bert_dim * 2 + 4), dtype=torch.float, device=self.device), {}
             
-        # 使用字典进行去重，以用户elementId为键
         unique_users = {}
         id_to_idx = {}
         current_idx = 0
         
         for user in users:
             properties = dict(user)
-            # 修改这里：从获取id改为获取elementId
-            user_id = str(user.element_id)  # 使用节点的element_id属性
+            user_id = str(user.element_id)
             if user_id not in unique_users:
-                # 获取用户名和描述的BERT嵌入
+                # BERT特征
                 username = str(properties.get('username', ''))
                 description = str(properties.get('description', ''))
-                username_embedding = self._get_bert_embedding(username)
-                desc_embedding = self._get_bert_embedding(description)
+                username_embedding = self._get_bert_embedding(username)  # [128]
+                desc_embedding = self._get_bert_embedding(description)   # [128]
                 
-                # 其他特征
-                other_features = torch.tensor([
+                # 数值特征（进行归一化）
+                numerical_features = torch.tensor([
                     float(properties.get('followerCount', 0)),
                     float(properties.get('followingCount', 0)),
                     float(properties.get('likeCount', 0)),
                     float(properties.get('postCount', 0))
                 ], device=self.device)
                 
+                # 对数变换处理大数值
+                numerical_features = torch.log1p(numerical_features)
+                
                 # 合并特征
-                features = torch.cat([username_embedding, desc_embedding, other_features])
+                features = torch.cat([username_embedding, desc_embedding, numerical_features])
                 unique_users[user_id] = features
                 id_to_idx[user_id] = current_idx
                 current_idx += 1
-            
-        # 将去重后的特征转换为tensor
+        
         features_list = list(unique_users.values())
         return torch.stack(features_list), id_to_idx
         
@@ -308,97 +320,78 @@ class DataLoader:
                 valid_count += 1
         
         if valid_count > 0:
-            # 合并图数据
-            merged_data = self._merge_graphs(batch_graphs)
-            if merged_data is None:
-                return None
-                
-            # 添加标签到合并数据中
-            merged_data['labels'] = torch.stack(batch_labels)
+            # 使用PyG的Batch类合并图
+            batch = Batch.from_data_list(batch_graphs)
+            
+            # 转换为所需的格式
+            merged_data = {
+                'x_dict': {},
+                'edge_index_dict': {},
+                'labels': torch.stack(batch_labels)
+            }
+            
+            # 复制节点特征，为super节点创建独立特征
+            for node_type in batch.node_types:
+                if node_type == 'super':
+                    # 为每个子图创建一个独立的super节点
+                    feature_dim = self._get_feature_dim('super')
+                    merged_data['x_dict']['super'] = torch.randn((len(batch_graphs), feature_dim), 
+                                                               device=self.device) * 0.01
+                else:
+                    merged_data['x_dict'][node_type] = batch[node_type].x
+            
+            # 复制边索引，特别处理super节点的边
+            for edge_type in batch.edge_types:
+                if edge_type[-1] == 'super':
+                    # 处理到super节点的边
+                    src_nodes = batch[edge_type].edge_index[0]
+                    batch_idx = batch[edge_type[0]].batch[src_nodes]  # 获取源节点所属的批次索引
+                    edge_index = torch.stack([
+                        src_nodes,
+                        batch_idx  # 使用批次索引作为目标super节点的索引
+                    ])
+                    merged_data['edge_index_dict'][edge_type] = edge_index
+                else:
+                    merged_data['edge_index_dict'][edge_type] = batch[edge_type].edge_index
             
             return merged_data
         
         return None
 
-    def _merge_graphs(self, graphs: List[HeteroData]) -> Dict:
-        """合并多个异构图
-        Args:
-            graphs: HeteroData对象列表
-        Returns:
-            Dict: 包含合并后的节点特征和边索引的字典
-        """
-        if not graphs:
-            return None
-        
-        # 初始化合并后的数据结构
-        merged_data = {
-            'x_dict': {},
-            'edge_index_dict': {},
-            'batch_size': len(graphs)
+    def _get_emotion_encoding(self, emotion: str) -> float:
+        """获取情感的数值编码"""
+        emotion_map = {
+            'neutral': 0.0,
+            'joy': 0.8,
+            'love': 1.0,
+            'surprise': 0.4,
+            'sad': -0.6,
+            'fear': -0.8,
+            'anger': -1.0
         }
+        return emotion_map.get(emotion, 0.0)
         
-        # 获取所有节点类型和边类型
-        node_types = set()
-        edge_types = set()
-        for graph in graphs:
-            node_types.update(graph.node_types)
-            edge_types.update(graph.edge_types)
+    def _get_theme_encoding(self, theme: str) -> float:
+        """获取主题的数值编码"""
+        theme_map = {
+            'people': 0.2,
+            'person': 0.3,
+            'indoor': 0.4,
+            'outdoor': 0.5,
+            'cartoon': 0.6,
+            'text': 0.7,
+            'activity': 0.8,
+            'animal': 0.9,
+            'other': 0.1
+        }
+        return theme_map.get(theme, 0.1)
         
-        # 记录每种节点类型的累积数量，用于边索引的偏移
-        cumsum = {node_type: 0 for node_type in node_types}
-        
-        # 合并节点特征
-        for node_type in node_types:
-            features = []
-            for graph in graphs:
-                if node_type in graph.node_types and hasattr(graph[node_type], 'x'):
-                    if graph[node_type].x.shape[0] > 0:  # 只添加非空特征
-                        features.append(graph[node_type].x)
-                        cumsum[node_type] += graph[node_type].x.shape[0]
-                    else:
-                        # 如果特征为空，创建一个具有正确维度的零张量
-                        feature_dim = self._get_feature_dim(node_type)
-                        empty_feature = torch.zeros((1, feature_dim), device=self.device)
-                        features.append(empty_feature)
-                        cumsum[node_type] += 1
-            
-            if features:
-                merged_data['x_dict'][node_type] = torch.cat(features, dim=0)
-            else:
-                # 如果没有这种类型的节点，创建一个空张量
-                feature_dim = self._get_feature_dim(node_type)
-                merged_data['x_dict'][node_type] = torch.zeros((1, feature_dim), device=self.device)
-        
-        # 合并边索引
-        offset = {node_type: 0 for node_type in node_types}
-        for edge_type in edge_types:
-            edge_indices = []
-            for graph in graphs:
-                if edge_type in graph.edge_types:
-                    edge_index = graph[edge_type].edge_index.clone()
-                    if edge_index.shape[1] > 0:  # 只处理非空边
-                        # 更新源节点和目标节点的索引
-                        edge_index[0] += offset[edge_type[0]]
-                        edge_index[1] += offset[edge_type[-1]]
-                        edge_indices.append(edge_index)
-                # 更新偏移量
-                if edge_type[0] in graph and hasattr(graph[edge_type[0]], 'x'):
-                    offset[edge_type[0]] += max(1, graph[edge_type[0]].x.shape[0])
-                if edge_type[-1] in graph and hasattr(graph[edge_type[-1]], 'x'):
-                    offset[edge_type[-1]] += max(1, graph[edge_type[-1]].x.shape[0])
-            
-            if edge_indices:
-                merged_data['edge_index_dict'][edge_type] = torch.cat(edge_indices, dim=1)
-            else:
-                merged_data['edge_index_dict'][edge_type] = torch.zeros((2, 0), dtype=torch.long, device=self.device)
-        
-        return merged_data
-
     def _get_feature_dim(self, node_type: str) -> int:
         """获取节点类型的特征维度"""
         dims = {
-            'user': 1540,        # 768(bert_username) + 768(bert_description) + 4(other_features)
-            'media_session': 777,  # 768(bert_description) + 9(other_features)
-            'comment': 769       # 768(bert_text) + 1(postId)
+            'user': self.bert_dim * 2 + 4,        # 128(bert_username) + 128(bert_description) + 4(other_features)
+            'media_session': self.bert_dim + 9,    # 128(bert_description) + 9(other_features)
+            'comment': self.bert_dim + 1,         # 128(bert_text) + 1(postId)
+            'super': 128                          # 与模型的hidden_dim保持一致
         }
-        return dims.get(node_type, 64)
+        return dims.get(node_type, 128)

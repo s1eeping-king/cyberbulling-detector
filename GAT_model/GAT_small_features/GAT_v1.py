@@ -9,13 +9,13 @@ import random
 
 class HeteroGAT(nn.Module):
     """异构图注意力网络 - 单向消息传递"""
-    def __init__(self, hidden_dim: int = 128, num_layers: int = 2, dropout: float = 0.3):
+    def __init__(self, hidden_dim: int = 32, num_layers: int = 2, dropout: float = 0.3):
         super().__init__()
         # 节点特征维度
         self.feature_dims = {
-            'user': 1540,        # 768(bert_username) + 768(bert_description) + 4(other_features)
-            'media_session': 777,  # 768(bert_description) + 9(other_features)
-            'comment': 769,      # 768(bert_text) + 1(postId)
+            'user': 40,         # 16(bert_username) + 16(bert_description) + 8(other_features)
+            'media_session': 24,  # 16(bert_description) + 8(other_features)
+            'comment': 24       # 16(bert_text) + 8(other_features)
         }
         
         # 边的类型和方向
@@ -28,10 +28,10 @@ class HeteroGAT(nn.Module):
         
         # 定义每种边类型的方向性
         self.edge_directions = {
-            ('user', 'publishes', 'media_session'): 'forward',  # user -> media_session
-            ('user', 'creates', 'comment'): 'forward',          # user -> comment
-            ('comment', 'mentions', 'user'): 'forward',         # comment -> user
-            ('comment', 'belongs_to', 'media_session'): 'forward'  # comment -> media_session
+            ('user', 'publishes', 'media_session'): 'forward',
+            ('user', 'creates', 'comment'): 'forward',
+            ('comment', 'mentions', 'user'): 'forward',
+            ('comment', 'belongs_to', 'media_session'): 'forward'
         }
         
         self.hidden_dim = hidden_dim
@@ -55,8 +55,12 @@ class HeteroGAT(nn.Module):
         
         for i in range(num_layers):
             # Use GATConv for all layers
+            out_channels = hidden_dim // 2 if i == num_layers-1 else hidden_dim
+            heads = 4 if i < num_layers-1 else 1  # 最后一层只用1个头
+            
             conv = HeteroConv({
-                edge_type: GATConv(hidden_dim, hidden_dim, heads=4, dropout=dropout, add_self_loops=False)
+                edge_type: GATConv(hidden_dim, out_channels, 
+                                 heads=heads, dropout=dropout, add_self_loops=False)
                 for edge_type in self.edge_types
             })
             
@@ -64,7 +68,7 @@ class HeteroGAT(nn.Module):
             
             # 为每种节点类型添加批归一化
             batch_norm_dict = nn.ModuleDict({
-                node_type: nn.LayerNorm(hidden_dim)
+                node_type: nn.LayerNorm(out_channels)
                 for node_type in self.feature_dims.keys()
             })
             self.batch_norms.append(batch_norm_dict)
@@ -72,7 +76,7 @@ class HeteroGAT(nn.Module):
         # 注意力机制 - 用于聚合不同节点的信息
         self.attention = nn.ModuleDict({
             node_type: nn.Sequential(
-                nn.Linear(hidden_dim, 1),
+                nn.Linear(hidden_dim // 2, 1),
                 nn.Sigmoid()
             )
             for node_type in self.feature_dims.keys()
@@ -80,7 +84,7 @@ class HeteroGAT(nn.Module):
         
         # 预测层 - 针对媒体会话节点
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim * 3, hidden_dim),  # 修改输入维度为 hidden_dim * 3
+            nn.Linear((hidden_dim // 2) * 3, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
@@ -197,20 +201,20 @@ class HeteroGAT(nn.Module):
                 
                 # 应用非线性、归一化和残差连接
                 for node_type, h in updated_h_dict.items():
-                    # Always process GATConv multi-head output
-                    # 正确的多头注意力处理方式：
-                    # 1. 首先reshape为[num_nodes, num_heads, out_channels]
-                    h = h.view(-1, 4, self.hidden_dim)  # 4是heads数量
-                    # 2. 在heads维度上取平均
-                    h = h.mean(dim=1)
+                    # 处理多头注意力输出
+                    if i < self.num_layers - 1:  # 非最后一层，4头
+                        h = h.view(-1, 4, self.hidden_dim)  # [num_nodes, num_heads, hidden_dim]
+                        h = h.mean(dim=1)  # [num_nodes, hidden_dim]
+                    else:  # 最后一层，1头，输出维度是hidden_dim//2
+                        h = h.view(-1, self.hidden_dim // 2)  # [num_nodes, hidden_dim//2]
                     
                     # 应用归一化
                     h = self.batch_norms[i][node_type](h)
                     # 应用ReLU和Dropout
                     h = F.relu(h)
                     h = F.dropout(h, p=self.dropout, training=self.training)
-                    # 添加残差连接
-                    if node_type in initial_h_dict:
+                    # 添加残差连接（只在非最后一层）
+                    if i < self.num_layers - 1 and node_type in initial_h_dict:
                         h = h + initial_h_dict[node_type]
                     valid_h_dict[node_type] = h
             
