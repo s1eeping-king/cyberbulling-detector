@@ -15,12 +15,11 @@
         "cwd": "${workspaceFolder}" // 工作目录
       },
       
-      // 添加一个新的配置用于启动特定脚本
       {
-        "name": "Python: GAT主程序",
+        "name": "Python: others_v1",
         "type": "debugpy",
         "request": "launch",
-        "program": "D:\\Work\\PostGraduate\\Dissertations\\multimodal_v5\\GAT_model\\GAT_senior\\main.py",
+        "program": "D:\\Work\\PostGraduate\\Dissertations\\multimodal_v6\\experiments_others\\random_forest_classifier.py",
         "console": "integratedTerminal",
         "justMyCode": false,
         "env": {
@@ -36,5 +35,45 @@
         ],
         "cwd": "${workspaceFolder}"
       },
+      {
+        "name": "Python: others_v2",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "D:\\Work\\PostGraduate\\Dissertations\\multimodal_v6\\experiments_others\\v2\\random_forest_classifier.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}",
+          // 如果使用GPU可以添加：
+          "CUDA_VISIBLE_DEVICES": "0"  // 指定使用的GPU编号
+        },
+        "args": [
+          // 添加您常用的命令行参数，例如：
+          // "--dataset", "cora",
+          // "--hidden", "8",
+          // "--lr", "0.01"
+        ],
+        "cwd": "${workspaceFolder}"
+      },
+      {
+        "name": "Python: v12_user_features",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "D:\\Work\\PostGraduate\\Dissertations\\multimodal_v6\\experiments_heterograph\\v12\\user_features_extended.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}",
+          // 如果使用GPU可以添加：
+          "CUDA_VISIBLE_DEVICES": "0"  // 指定使用的GPU编号
+        },
+        "args": [
+          // 添加您常用的命令行参数，例如：
+          // "--dataset", "cora",
+          // "--hidden", "8",
+          // "--lr", "0.01"
+        ],
+        "cwd": "${workspaceFolder}"
+      },      
     ]
 }
