@@ -75,5 +75,25 @@
         ],
         "cwd": "${workspaceFolder}"
       },      
+            {
+        "name": "Python: v15_user_features",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "D:\\Work\\PostGraduate\\Dissertations\\multimodal_v6\\experiments_heterograph\\v15\\user_features_extended.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}",
+          // 如果使用GPU可以添加：
+          "CUDA_VISIBLE_DEVICES": "0"  // 指定使用的GPU编号
+        },
+        "args": [
+          // 添加您常用的命令行参数，例如：
+          // "--dataset", "cora",
+          // "--hidden", "8",
+          // "--lr", "0.01"
+        ],
+        "cwd": "${workspaceFolder}"
+      },      
     ]
 }
